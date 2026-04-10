@@ -1,0 +1,49 @@
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+.Python
+
+# ===== Large data files (excluded from repo) =====
+# Raw financial data (~100MB+, download via data/download.py)
+data/raw/balance_sheet/
+data/raw/profit_sheet/
+data/raw/cashflow_sheet/
+data/raw/financial/
+data/raw/index_hs300_daily.parquet
+data/raw/daily_prices/
+
+# Processed data (regenerate via pipeline)
+data/processed/*.parquet
+
+# ===== Output (keep images and summary CSVs, skip large nav files) =====
+# Uncomment below if you want to exclude ALL output:
+# output/
+
+# ===== Virtual environments =====
+venv/
+env/
+.env
+.venv
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== Word/Office docs =====
+*.docx
+*.xlsx
+*.pptx
+
+# ===== Jupyter =====
+.ipynb_checkpoints/
+*.ipynb
