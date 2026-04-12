@@ -60,18 +60,66 @@ AMIHUD 非流动性因子是本项目最强的 alpha 信号（ICIR=0.227，FM t=
 
 **Ridge + TopRisk 的 Sharpe-Calmar 权衡**
 
-从绝对收益角度，启用风控层后 Ridge 年化收益下降 136bp（20.20%→18.84%），Sharpe 从 1.018 降至 0.960（−5.7%）。这一下降幅度显著超过了 Calmar 的改善（0.969→0.982，+1.3%），从综合风险调整收益视角看**不建议对 Ridge 默认启用过滤层**。
+从绝对收益角度，启用风控层后 Ridge 年化收益下降 136bp（20.20%→18.84%），Sharpe 从 1.018 降至 0.960（−5.7%）。这一下降幅度显著超过了 Calmar 的改善（0.969→0.982，+1.3%）。因此，Ridge 是否启用过滤层应取决于投资人的风险偏好和产品约束，而不是给出单一强结论。
 
 原因分析：
 - Ridge 的预测已隐含动量/反转信息，选出的 Top-N 与"近期热门票"天然重叠度偏低，风控层"二次筛"带来的增量价值有限
 - 每月强制剔除 20% 使换手率升至 56.7%（+10.6 pp），加剧摩擦成本；Information Ratio 同步下降（1.771→1.697，−4.2%），alpha 一致性受损
 - Calmar 的微幅改善本质上来自最大回撤缩减 165bp，这对多数风险预算约束而言不足以覆盖 136bp 的年化收益损失
 
-例外场景：若产品有**最大回撤硬约束**（如 −20%），风控层仍有保险价值（MaxDD: −20.85%→−19.20%，距约束线增加 80bp 缓冲）。建议通过 `ENABLE_TOP_RISK_FILTER` 按策略选择性启用：**ICIR 开启**（Sharpe+Calmar 双升），**Ridge/XGBoost 默认关闭**。
+建议口径：
+- 若投资人更关注收益效率、Sharpe 和信息比率，Ridge 更适合关闭 TopRisk，因为过滤层降低年化收益和 Sharpe。
+- 若产品有明确的最大回撤约束（如 −20%）或更看重尾部风险缓冲，Ridge 可以条件性启用 TopRisk，因为 MaxDD 从 −20.85% 改善到 −19.20%，Calmar 小幅提升。
+- 因此，`ENABLE_TOP_RISK_FILTER` 应按策略和风险预算选择性启用：**ICIR 倾向开启**（Sharpe+Calmar 双升），**Ridge 取决于风险偏好**，**XGBoost 倾向关闭**（收益和 Sharpe 均下降）。
 
 ---
 
-## 4. 图表
+## 4. Factor Weighting Iteration
+
+在 v1 方案中，`TOP_RISK_SCORE` 使用 4 个风控子因子的等权合成：
+
+```text
+TOP_RISK_SCORE_v1 = mean(BIAS_20_z, UPSHADOW_20_z, VOL_SPIKE_6M_z, RET_6M_z)
+```
+
+基于 `exclusion_driver_analysis.csv` 的驱动因子分析，进一步测试了 v2 IC 加权方案。v2 的思想是：如果某个风控因子主导剔除的股票在后续 1 个月更容易下跌，则提高该因子的风控权重；如果后续下跌占比不高，则降低甚至反向处理该因子。
+
+权重定义为：
+
+```text
+weight_{factor,t} = P(ret_next_month < 0 | factor dominates historical v1 exclusions before t) - 0.5
+```
+
+为避免 look-ahead bias，`t` 月的权重只使用 `t` 月以前的历史剔除样本估计。训练样本来自 v1 等权 TopRisk 的 `excluded_stocks_log.csv`，并按 `(month, stock_code)` 去重，与驱动因子分析口径一致。
+
+98 个月样本内，walk-forward 平均权重大致为：
+
+| 因子 | 平均权重 | 解释 |
+|---|---:|---|
+| BIAS_20 | +0.050 | 最高，说明价格偏离均线的过热信号最有拦截价值 |
+| RET_6M | +0.022 | 正权重，近期累计涨幅也有一定拦截价值 |
+| UPSHADOW_20 | -0.002 | 接近 0，单独拦截价值不稳定 |
+| VOL_SPIKE_6M | -0.016 | 接近 0 且偏负，异常放量容易误伤后续仍上涨的股票 |
+
+但绩效结果显示，v2 并没有优于 v1：
+
+| 策略 | 年化收益 | Sharpe | 最大回撤 | Calmar | 信息比率 | 换手率 |
+|---|---:|---:|---:|---:|---:|---:|
+| ICIR (no filter) | 19.27% | 0.953 | -23.81% | 0.809 | 1.414 | 33.4% |
+| ICIR + TopRisk v1 equal | 19.55% | 0.977 | -22.25% | 0.879 | 1.470 | 42.4% |
+| ICIR + TopRisk v2 IC-weighted | 16.59% | 0.824 | -24.45% | 0.679 | 1.224 | 44.4% |
+
+结论：**等权是更稳健的选择**。虽然 v2 的权重方向符合 driver analysis 的直觉，即 BIAS_20 权重最高、VOL_SPIKE_6M 接近 0 或为负，但动态权重把风控分过度集中到少数历史上有效的拦截信号，导致剔除名单发生较大变化，收益、Sharpe、回撤和 Calmar 均弱于 v1。当前正式方案应继续保留 v1 等权 TopRisk；v2 仅作为一次权重迭代实验记录。
+
+相关输出：
+- 风控因子相关矩阵：[`../output/ablation/risk_factor_correlation.csv`](../output/ablation/risk_factor_correlation.csv)
+- 风控因子相关热力图：[`../output/ablation/risk_factor_corr.png`](../output/ablation/risk_factor_corr.png)
+- v2 对比结果：[`../output/ablation/v2_performance.csv`](../output/ablation/v2_performance.csv)
+- v2 walk-forward 权重：[`../output/ablation/v2_risk_factor_weights.csv`](../output/ablation/v2_risk_factor_weights.csv)
+
+---
+
+## 5. 图表
 
 - NAV 对比图：[`../output/ablation/nav_comparison.png`](../output/ablation/nav_comparison.png)
 - 回撤对比图（含 2018/2022/2024 标注）：[`../output/ablation/drawdown_comparison.png`](../output/ablation/drawdown_comparison.png)
@@ -79,7 +127,7 @@ AMIHUD 非流动性因子是本项目最强的 alpha 信号（ICIR=0.227，FM t=
 
 ---
 
-## 5. 敏感性分析
+## 6. 敏感性分析
 
 遍历 `TOP_RISK_FILTER_PCT ∈ {10%, 15%, 20%, 25%, 30%}`：
 
@@ -100,7 +148,7 @@ AMIHUD 非流动性因子是本项目最强的 alpha 信号（ICIR=0.227，FM t=
 
 ---
 
-## 6. Sanity Check
+## 7. Sanity Check
 
 > 目的：验证被风控层剔除的确实是"最近暴涨的热门票"，而非数据bug误伤正常股票。
 
@@ -138,7 +186,7 @@ AMIHUD 非流动性因子是本项目最强的 alpha 信号（ICIR=0.227，FM t=
 
 ---
 
-## 7. 技术备注
+## 8. 技术备注
 
 **重复记录说明**：`excluded_stocks_log.csv` 中每月 20 条记录来自三个策略（ICIR、Ridge、XGBoost）共用同一 `log_records` 列表，同一股票若被多个策略同时剔除会出现重复行。分析时按 `(month, stock_code)` 去重即可。
 
