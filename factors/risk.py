@@ -154,7 +154,12 @@ def build_top_risk_score(raw_df: pd.DataFrame) -> pd.DataFrame:
     result = result.sort_values(["stock_code", "year_month"])
     result["TOP_RISK_SCORE"] = result.groupby("stock_code")["TOP_RISK_SCORE"].shift(1)
 
-    output = result[["stock_code", "year_month", "TOP_RISK_SCORE"]].copy()
+    # 同步 shift 各子因子 z-score（供驱动因子分析使用，时间对齐与 TOP_RISK_SCORE 一致）
+    for col in available:
+        result[f"{col}_z"] = result.groupby("stock_code")[col].shift(1)
+
+    z_cols = [f"{col}_z" for col in available]
+    output = result[["stock_code", "year_month", "TOP_RISK_SCORE"] + z_cols].copy()
     return output
 
 
@@ -168,12 +173,20 @@ def build_risk_factors() -> pd.DataFrame:
         med = raw_df[col].median()
         print(f"  {col}: NaN={nan_pct:.1%}, median={med:.4f}" if pd.notna(med) else f"  {col}: NaN={nan_pct:.1%}")
 
-    risk_panel = build_top_risk_score(raw_df)
+    risk_panel_full = build_top_risk_score(raw_df)
+
+    # 向后兼容：仅含 3 列的主面板（factor_risk.parquet 不变）
+    risk_panel = risk_panel_full[["stock_code", "year_month", "TOP_RISK_SCORE"]].copy()
 
     nan_pct = risk_panel["TOP_RISK_SCORE"].isna().mean()
     print(f"[risk] TOP_RISK_SCORE: NaN={nan_pct:.1%} (首月因shift为NaN，正常)")
     print(f"[risk] 时间范围: {risk_panel['year_month'].min()} ~ {risk_panel['year_month'].max()}")
     print(f"[risk] 总行数: {len(risk_panel)}, 股票数: {risk_panel['stock_code'].nunique()}")
+
+    # 新增：保存子因子 z-score 详情（供 exclusion_driver_analysis.py 使用）
+    detail_path = os.path.join(PROCESSED_DIR, "factor_risk_detail.parquet")
+    risk_panel_full.to_parquet(detail_path, index=False)
+    print(f"[risk] 子因子详情已保存: {detail_path}")
 
     return risk_panel
 
