@@ -105,6 +105,8 @@ def run_portfolio_backtest(
     top_n: int = TOP_N_STOCKS,
     transaction_cost: float = TRANSACTION_COST,
     save_root: str = "portfolio",
+    risk_panel: pd.DataFrame | None = None,
+    log_path: str | None = None,
 ) -> tuple[pd.DataFrame, pd.Series]:
     """Run one monthly top-N backtest for a given factor-combination method."""
     panel = load_factor_panel() if panel is None else panel.copy()
@@ -113,6 +115,29 @@ def run_portfolio_backtest(
     weights_df = build_dynamic_factor_weights(ic_df, method=method)
     scored_panel = combine_factor_scores(panel, weights_df, available)
     holdings = select_top_n_portfolio(scored_panel, top_n=top_n)
+
+    # ── 顶部风险过滤层 ──────────────────────────────────────────────────────
+    # 仅在 ENABLE_TOP_RISK_FILTER=True 且传入了 risk_panel 时生效。
+    # risk_panel=None 时完全跳过，保证 ablation 对照组与旧结果完全一致。
+    from config import ENABLE_TOP_RISK_FILTER, TOP_RISK_FILTER_PCT
+    from portfolio.risk_filter import apply_top_risk_filter as _apply_risk_filter
+
+    if ENABLE_TOP_RISK_FILTER and risk_panel is not None:
+        log_records: list = []
+        filtered_rows = []
+        for ym, grp in holdings.groupby("year_month"):
+            kept = _apply_risk_filter(
+                grp["stock_code"].tolist(), ym, risk_panel,
+                TOP_RISK_FILTER_PCT, log_records
+            )
+            kept_grp = grp[grp["stock_code"].isin(kept)].copy()
+            if len(kept_grp) > 0:
+                kept_grp["weight"] = 1.0 / len(kept_grp)
+            filtered_rows.append(kept_grp)
+        holdings = pd.concat(filtered_rows, ignore_index=True)
+        if log_path and log_records:
+            pd.DataFrame(log_records).to_csv(log_path, index=False, encoding="utf-8-sig")
+    # ──────────────────────────────────────────────────────────────────────
 
     benchmark = load_benchmark_returns()
     results = []

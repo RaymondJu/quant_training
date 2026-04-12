@@ -279,9 +279,22 @@ def backtest_from_scores(
     benchmark: pd.Series,
     top_n: int = TOP_N_STOCKS,
     cost: float = TRANSACTION_COST,
+    risk_panel: pd.DataFrame | None = None,
+    filter_pct: float = 0.0,
+    log_records: list | None = None,
 ) -> tuple[pd.Series, pd.Series]:
     """
     月度选股回测，返回 (strategy_returns, turnover)，index=year_month。
+
+    Parameters
+    ----------
+    risk_panel : pd.DataFrame | None
+        月频风控面板（stock_code, year_month, TOP_RISK_SCORE）。
+        为 None 或 filter_pct<=0 时跳过风控过滤，结果与旧版完全一致。
+    filter_pct : float
+        风控剔除比例，如 0.20。
+    log_records : list | None
+        被剔除股票追加到此列表。
     """
     returns = panel[["stock_code", "year_month", "ret_next_month"]]
     scored = predictions.merge(returns, on=["stock_code", "year_month"], how="inner")
@@ -297,6 +310,12 @@ def backtest_from_scores(
         top = cross.sort_values("score", ascending=False).head(top_n)["stock_code"].tolist()
         if not top:
             continue
+
+        # ── 顶部风险过滤层 ───────────────────────────────────────────────
+        if risk_panel is not None and filter_pct > 0:
+            from portfolio.risk_filter import apply_top_risk_filter
+            top = apply_top_risk_filter(top, ym, risk_panel, filter_pct, log_records)
+        # ────────────────────────────────────────────────────────────────
 
         enter = set(top) - prev_holdings
         exit_ = prev_holdings - set(top)

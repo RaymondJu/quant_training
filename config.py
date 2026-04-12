@@ -41,6 +41,16 @@ LSTM_TRAIN_WINDOW = 36      # LSTM: 过去36个月
 LSTM_VAL_WINDOW = 12        # LSTM验证: 12个月
 LSTM_LOOKBACK = 12          # LSTM回望窗口: 12个月
 
+# ==================== 顶部风险过滤层 ====================
+ENABLE_TOP_RISK_FILTER = True   # False时完全跳过，复现原始结果
+TOP_RISK_FILTER_PCT    = 0.20   # 剔除风控分最高的20%
+TOP_RISK_WINDOWS = {
+    "bias_window":      20,     # BIAS_20 均线窗口（交易日）
+    "upshadow_window":  20,     # UPSHADOW_20 计算窗口（交易日）
+    "vol_spike_window":  6,     # VOL_SPIKE_6M 基期月数
+    "ret_window":        6,     # RET_6M 累计月数
+}
+
 # ==================== AKShare 下载配置 ====================
 DOWNLOAD_SLEEP = 2.0        # 每次请求间隔(秒), 避免频率限制
 MAX_RETRY = 5               # 最大重试次数
