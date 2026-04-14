@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import OUTPUT_DIR, PROCESSED_DIR, RAW_DIR, TOP_N_STOCKS, TRANSACTION_COST
+from config import OUTPUT_DIR, PROCESSED_DIR, TOP_N_STOCKS, TRANSACTION_COST
 from portfolio.performance import summarize_returns
 
 plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
@@ -51,17 +51,9 @@ def load_factor_panel_returns() -> pd.DataFrame:
 
 
 def load_benchmark_returns() -> pd.Series:
-    """月末沪深300收益率，index=year_month（信号月，即持仓月）。"""
-    path = os.path.join(RAW_DIR, "index_hs300_daily.parquet")
-    idx = pd.read_parquet(path).copy()
-    idx["date"] = pd.to_datetime(idx["date"])
-    month_end = idx.sort_values("date").groupby(idx["date"].dt.to_period("M")).tail(1).copy()
-    month_end["ret"] = month_end["close"].pct_change()
-    # 信号月 t 持有，下月 t+1 收益 → 对应到 year_month = t
-    month_end["year_month"] = month_end["date"].dt.to_period("M") - 1
-    s = month_end.set_index("year_month")["ret"].dropna()
-    s.index = pd.PeriodIndex(s.index, freq="M")
-    return s
+    """月末沪深300全收益率，index=year_month（信号月，即持仓月）。"""
+    from data.benchmark import load_benchmark_returns as _load
+    return _load()
 
 
 def run_lgbm_backtest(

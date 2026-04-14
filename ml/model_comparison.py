@@ -36,7 +36,7 @@ from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import LGBM_TRAIN_WINDOW, OUTPUT_DIR, PROCESSED_DIR, RAW_DIR, TOP_N_STOCKS, TRANSACTION_COST
+from config import LGBM_TRAIN_WINDOW, OUTPUT_DIR, PROCESSED_DIR, TOP_N_STOCKS, TRANSACTION_COST
 from portfolio.performance import summarize_returns
 
 plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
@@ -133,14 +133,9 @@ def load_factor_panel() -> pd.DataFrame:
 
 
 def load_benchmark_returns() -> pd.Series:
-    path = os.path.join(RAW_DIR, "index_hs300_daily.parquet")
-    idx = pd.read_parquet(path).copy()
-    idx["date"] = pd.to_datetime(idx["date"])
-    month_end = idx.sort_values("date").groupby(idx["date"].dt.to_period("M")).tail(1).copy()
-    month_end["ret"] = month_end["close"].pct_change()
-    month_end["year_month"] = month_end["date"].dt.to_period("M") - 1
-    s = month_end.set_index("year_month")["ret"].dropna()
-    return pd.Series(s.values, index=pd.PeriodIndex(s.index, freq="M"))
+    """Load HS300 monthly total-return benchmark (unified via data.benchmark)."""
+    from data.benchmark import load_benchmark_returns as _load
+    return _load()
 
 
 # =====================================================
@@ -296,8 +291,14 @@ def backtest_from_scores(
     log_records : list | None
         被剔除股票追加到此列表。
     """
-    returns = panel[["stock_code", "year_month", "ret_next_month"]]
+    ret_cols = ["stock_code", "year_month", "ret_next_month"]
+    if "in_universe" in panel.columns:
+        ret_cols.append("in_universe")
+    returns = panel[ret_cols]
     scored = predictions.merge(returns, on=["stock_code", "year_month"], how="inner")
+    # 时变 universe 过滤: 仅从当期成分股中选股
+    if "in_universe" in scored.columns:
+        scored = scored[scored["in_universe"]].copy()
     months = sorted(scored["year_month"].unique())
 
     ret_list, to_list, month_list = [], [], []

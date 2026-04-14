@@ -56,14 +56,8 @@ def slugify(name: str) -> str:
 
 
 def get_benchmark_returns() -> pd.Series:
-    path = os.path.join(RAW_DIR, "index_hs300_daily.parquet")
-    idx = pd.read_parquet(path).copy()
-    idx["date"] = pd.to_datetime(idx["date"])
-    month_end = idx.sort_values("date").groupby(idx["date"].dt.to_period("M")).tail(1).copy()
-    month_end["ret"] = month_end["close"].pct_change()
-    month_end["year_month"] = month_end["date"].dt.to_period("M") - 1
-    series = month_end.set_index("year_month")["ret"].dropna()
-    return pd.Series(series.values, index=pd.PeriodIndex(series.index, freq="M"), name="HS300")
+    from data.benchmark import load_benchmark_returns
+    return load_benchmark_returns()
 
 
 def get_default_model_factories() -> dict[str, Callable[[], Any]]:

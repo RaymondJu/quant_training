@@ -39,11 +39,8 @@ def build_additional_factors() -> pd.DataFrame:
     daily = daily.sort_values(["stock_code", "date"]).copy()
     daily["daily_ret"] = daily["pct_change"] / 100.0
 
-    index_path = os.path.join(RAW_DIR, "index_hs300_daily.parquet")
-    index_df = pd.read_parquet(index_path)
-    index_df["date"] = pd.to_datetime(index_df["date"])
-    index_df = index_df.sort_values("date")
-    index_df["index_ret"] = index_df["close"].pct_change()
+    from data.benchmark import load_benchmark_daily_returns
+    index_df = load_benchmark_daily_returns()  # [date, index_ret]
 
     beta_daily = daily.merge(index_df[["date", "index_ret"]], on="date", how="inner")
     beta_daily = beta_daily.dropna(subset=["daily_ret", "index_ret"]).copy()

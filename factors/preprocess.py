@@ -31,7 +31,10 @@ FACTOR_COLS = ["EP", "BP", "SP", "MOM_12_1", "REV_1M", "ROE_TTM",
 def load_all_factors():
     """加载所有因子并合并到月度面板"""
     panel = load_monthly_panel()
-    base = panel[["stock_code", "year_month", "ret_next_month", "industry"]].copy()
+    base_cols = ["stock_code", "year_month", "ret_next_month", "industry"]
+    if "in_universe" in panel.columns:
+        base_cols.append("in_universe")
+    base = panel[base_cols].copy()
 
     factor_files = {
         "factor_value.parquet": ["EP", "BP", "SP"],
@@ -194,7 +197,7 @@ def preprocess_factors(neutralize_mktcap=False):
 
     # 输出列
     output_cols = (["stock_code", "year_month"] + available_factors +
-                   ["ret_next_month", "industry", "industry_l1"])
+                   ["ret_next_month", "industry", "industry_l1", "in_universe"])
     if mktcap_col and mktcap_col in result.columns:
         output_cols.append(mktcap_col)
     result = result[[c for c in output_cols if c in result.columns]]

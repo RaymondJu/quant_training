@@ -53,16 +53,13 @@ def build_volatility_factors():
     vol_monthly.columns = ["stock_code", "year_month", "VOL_20D"]
 
     # ------ IVOL: CAPM 残差波动率 ------
-    print("[volatility] 加载沪深300指数...")
-    index_path = os.path.join(RAW_DIR, "index_hs300_daily.parquet")
-    idx = pd.read_parquet(index_path)
-    idx["date"] = pd.to_datetime(idx["date"])
-    idx = idx.sort_values("date")
-    idx["index_ret"] = idx["close"].pct_change()
+    print("[volatility] 加载沪深300指数日收益...")
+    from data.benchmark import load_benchmark_daily_returns
+    idx_daily = load_benchmark_daily_returns()  # [date, index_ret]
 
     # 合并股票日收益与指数日收益
     daily_with_idx = daily.merge(
-        idx[["date", "index_ret"]], on="date", how="inner"
+        idx_daily[["date", "index_ret"]], on="date", how="inner"
     )
     daily_with_idx = daily_with_idx.dropna(subset=["daily_ret", "index_ret"])
 

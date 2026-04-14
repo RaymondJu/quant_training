@@ -13,7 +13,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import OUTPUT_DIR, RAW_DIR, TOP_N_STOCKS, TRANSACTION_COST
+from config import OUTPUT_DIR, TOP_N_STOCKS, TRANSACTION_COST
+from data.benchmark import load_benchmark_returns_df as _load_benchmark
 from portfolio.combine import (
     build_dynamic_factor_weights,
     combine_factor_scores,
@@ -29,14 +30,8 @@ plt.rcParams["axes.unicode_minus"] = False
 
 
 def load_benchmark_returns() -> pd.DataFrame:
-    """Load HS300 monthly returns aligned to the signal month."""
-    path = os.path.join(RAW_DIR, "index_hs300_daily.parquet")
-    idx = pd.read_parquet(path).copy()
-    idx["date"] = pd.to_datetime(idx["date"])
-    month_end = idx.sort_values("date").groupby(idx["date"].dt.to_period("M")).tail(1).copy()
-    month_end["benchmark_monthly_ret"] = month_end["close"].pct_change()
-    month_end["year_month"] = month_end["date"].dt.to_period("M") - 1
-    return month_end[["year_month", "benchmark_monthly_ret"]].dropna().reset_index(drop=True)
+    """Load HS300 monthly returns (total return) aligned to the signal month."""
+    return _load_benchmark()
 
 
 def _compute_turnover(prev_holdings: dict[str, float], curr_holdings: dict[str, float]) -> float:
@@ -50,6 +45,9 @@ def select_top_n_portfolio(
     score_col: str = "composite_score",
 ) -> pd.DataFrame:
     """Select the top-N stocks by score in each rebalance month."""
+    # 时变 universe 过滤: 仅从当期成分股中选股
+    if "in_universe" in scored_panel.columns:
+        scored_panel = scored_panel[scored_panel["in_universe"]].copy()
     rows = []
     for ym, grp in scored_panel.groupby("year_month"):
         ranked = (

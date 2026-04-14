@@ -13,6 +13,7 @@ data/raw/profit_sheet/
 data/raw/cashflow_sheet/
 data/raw/financial/
 data/raw/index_hs300_daily.parquet
+data/raw/index_hs300_total_return.parquet
 data/raw/daily_prices/
 
 # Processed data (regenerate via pipeline)

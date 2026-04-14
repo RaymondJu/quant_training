@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import OUTPUT_DIR, RAW_DIR
+from config import OUTPUT_DIR
 from portfolio.performance import summarize_returns
 
 plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
@@ -66,15 +66,9 @@ def load_strategy_returns(rel_path: str) -> pd.Series:
 
 
 def load_benchmark_returns() -> pd.Series:
-    """沪深300月度收益，index=year_month（信号月）"""
-    path = os.path.join(RAW_DIR, "index_hs300_daily.parquet")
-    idx = pd.read_parquet(path).copy()
-    idx["date"] = pd.to_datetime(idx["date"])
-    month_end = idx.sort_values("date").groupby(idx["date"].dt.to_period("M")).tail(1).copy()
-    month_end["ret"] = month_end["close"].pct_change()
-    month_end["year_month"] = month_end["date"].dt.to_period("M") - 1
-    s = month_end.set_index("year_month")["ret"].dropna()
-    return pd.Series(s.values, index=pd.PeriodIndex(s.index, freq="M"), name="HS300")
+    """沪深300月度全收益率，index=year_month（信号月）"""
+    from data.benchmark import load_benchmark_returns as _load
+    return _load()
 
 
 def build_performance_table(

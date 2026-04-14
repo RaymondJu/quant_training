@@ -1,6 +1,8 @@
 # A-Share Multi-Factor Stock Selection System
 
-> A full-stack quantitative research pipeline for CSI 300 (沪深300) covering factor construction → statistical testing → portfolio backtest → ML enhancement.
+> A full-stack quantitative research pipeline for CSI 300 covering factor construction, statistical testing, portfolio backtest, and ML enhancement.
+
+![Strategy Comparison](output/analysis/strategy_comparison.png)
 
 ---
 
@@ -10,22 +12,22 @@
 
 | Strategy | Ann. Return | Sharpe | Max DD | Excess Return | IR |
 |---|---|---|---|---|---|
-| Equal-weight | 16.97% | 0.755 | -28.0% | 14.80% | 1.16 |
-| IC-weight | 18.25% | 0.833 | -26.7% | 16.03% | 1.37 |
-| ICIR-weight | 17.37% | 0.796 | -26.7% | 15.13% | 1.28 |
-| **CSI 300 (Benchmark)** | **1.87%** | **0.098** | **-39.9%** | — | — |
+| Equal-weight | 16.97% | 0.755 | -28.0% | 12.55% | 0.98 |
+| IC-weight | 18.25% | 0.833 | -26.7% | 13.75% | 1.17 |
+| ICIR-weight | 17.37% | 0.796 | -26.7% | 12.87% | 1.09 |
+| **CSI 300 (Benchmark)** | **3.93%** | **0.207** | **-36.3%** | -- | -- |
 
 ### ML Enhancement (Walk-Forward, 2017-10 ~ 2025-11, 98 months)
 
 | Model | Ann. Return | Sharpe | Max DD | Excess Return | IR | Turnover |
 |---|---|---|---|---|---|---|
-| LightGBM | 18.50% | 0.880 | -22.9% | 16.39% | 1.541 | 71.8% |
-| CatBoost | 20.13% | 0.914 | -24.8% | 18.21% | 1.700 | 69.1% |
-| XGBoost | 21.09% | 1.000 | -22.5% | 18.95% | 1.764 | 70.1% |
-| **RandomForest** | **21.50%** | 1.009 | -22.9% | **19.33%** | 1.693 | 55.4% |
-| **Ridge** | 20.20% | **1.018** | **-20.9%** | 17.87% | **1.771** | 46.1% |
+| LightGBM | 10.94% | 0.538 | -29.3% | 6.98% | 0.973 | 63.6% |
+| CatBoost | 10.63% | 0.507 | -26.1% | 6.80% | 0.931 | 60.3% |
+| **XGBoost** | **13.09%** | **0.668** | -28.3% | **8.95%** | 1.276 | 64.2% |
+| RandomForest | 13.00% | 0.624 | -29.9% | 9.09% | 1.245 | 48.6% |
+| Ridge | 12.32% | 0.624 | **-22.4%** | 8.29% | **1.420** | 40.9% |
 
-> All ML models use **strict walk-forward** (24-month train, 3-month val, predict next 3 months) with no look-ahead bias.
+> All ML models use **strict walk-forward** (24-month train, 3-month val, predict next 3 months) with no look-ahead bias. Universe is filtered to time-varying CSI 300 constituents at each rebalance date.
 
 ---
 
@@ -35,7 +37,9 @@
 quant_training/
 ├── data/
 │   ├── download.py          # AKShare data pipeline (prices + financials)
-│   └── clean.py             # Deduplication, outlier removal
+│   ├── clean.py             # Deduplication, outlier removal, universe tagging
+│   ├── benchmark.py         # Unified benchmark loader (total return proxy)
+│   └── universe.py          # Time-varying CSI 300 constituent filter
 ├── factors/
 │   ├── utils.py             # TTM calculation, market cap, monthly alignment
 │   ├── preprocess.py        # MAD winsorize → Z-score → industry neutralize
@@ -56,7 +60,7 @@ quant_training/
 │   ├── lgbm_model.py        # LightGBM walk-forward with early stopping
 │   └── model_comparison.py  # Unified framework: LGBM / CatBoost / XGB / RF / Ridge
 ├── analysis/
-│   └── compare_strategies.py  # Final 6-strategy + benchmark comparison chart
+│   └── compare_strategies.py  # Final 8-strategy + benchmark comparison chart
 └── config.py                # Global parameters
 ```
 
@@ -67,42 +71,39 @@ quant_training/
 | Category | Factors | Key Finding |
 |---|---|---|
 | Value | EP, BP, SP | **Negative alpha in A-shares** (small-cap speculation effect) |
-| Momentum | MOM_12_1, REV_1M | Weak positive; ICIR ≈ 0.14 |
+| Momentum | MOM_12_1, REV_1M | Weak positive; ICIR ~ 0.14 |
 | Quality | ROE_TTM, GPM_change, OCF_QUALITY, ASSET_GROWTH | OCF_QUALITY significant (t=1.91*) |
-| Volatility | VOL_20D, IVOL, BETA_60D | IVOL & VOL_20D positive (FM t≈2.3**) |
-| Liquidity | TURN_1M, ABTURN_1M, AMIHUD, SIZE | **AMIHUD strongest** (ICIR=0.227, FM t=3.85***) |
-
-### Factor Validation Highlights
-
-- **AMIHUD** (illiquidity): IC mean=0.025, ICIR=0.227, long-short Ann=13.77%, Sharpe=1.055 — strongest single factor
-- **Fama-MacBeth multi-factor**: SIZE (***), BP (−***), SP (**), AMIHUD (**) jointly significant
-- **Value reversal**: BP long-short Ann=-10.8%, confirming A-share value factor anomaly
+| Volatility | VOL_20D, IVOL, BETA_60D | IVOL & VOL_20D positive (FM t~2.3**) |
+| Liquidity | TURN_1M, ABTURN_1M, AMIHUD, SIZE | **AMIHUD strongest** (ICIR=0.029, FM t>2**) |
 
 ---
 
 ## Methodology
 
 ### Data
-- Universe: CSI 300 constituents (~279 stocks)
-- Period: 2015-07 to 2025-12 (monthly frequency)
-- Source: AKShare (EastMoney backend for financials, adjusted prices)
+- **Universe**: Time-varying CSI 300 constituents at each rebalance date (~99 stocks in 2015, growing to ~269 in 2025). Only stocks that had been admitted to the index by the rebalance date are eligible, reducing survivorship bias.
+- **Benchmark**: CSI 300 Total Return proxy (price index + 2.0% annualized dividend yield). The CSI 300 price index excludes reinvested dividends; we add the historical average dividend yield (~2%) for apples-to-apples comparison with the strategy NAV.
+- **Period**: 2015-07 to 2025-12 (monthly frequency)
+- **Source**: AKShare (EastMoney backend for financials, adjusted prices)
 
 ### Key Design Choices
 | Issue | Solution |
 |---|---|
-| Back-adjusted prices invalid for cross-stock comparison | Market cap = `turnover/volume × outstanding_share` (VWAP proxy) |
+| Survivorship bias | Time-varying universe filter based on constituent entry dates (`data/universe.py`) |
+| Benchmark understates return | Total return proxy: price index + 2.0% annual dividend yield (`data/benchmark.py`) |
+| Back-adjusted prices invalid for cross-stock comparison | Market cap = `turnover/volume * outstanding_share` (VWAP proxy) |
 | Cumulative YTD financial statements | TTM = `Q_t + Annual(Y-1) - Q_corr(Y-1)` |
 | Look-ahead bias in financials | Use actual `NOTICE_DATE` not report period end |
-| Outlier contamination | MAD winsorization: `median ± 3 × 1.4826 × MAD` |
+| Outlier contamination | MAD winsorization: `median +/- 3 * 1.4826 * MAD` |
 | Industry concentration | OLS residualization on 28 SW Level-1 industry dummies |
 
 ### Walk-Forward Backtest
 ```
-Train [24m] | Val [3m] | → Predict next 3m
-             Train [24m] | Val [3m] | → Predict next 3m
+Train [24m] | Val [3m] | -> Predict next 3m
+             Train [24m] | Val [3m] | -> Predict next 3m
                           ...
 ```
-No hyperparameter tuning on the full sample — model selection done within each fold's validation window.
+No hyperparameter tuning on the full sample -- model selection done within each fold's validation window.
 
 ---
 
@@ -110,8 +111,8 @@ No hyperparameter tuning on the full sample — model selection done within each
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/YOUR_USERNAME/quant-factor-model.git
-cd quant-factor-model
+git clone https://github.com/RaymondJu/quant_training.git
+cd quant_training
 
 # 2. Create virtual environment (recommended)
 python -m venv venv
@@ -131,19 +132,11 @@ pip install -r requirements.txt
 # Step 1: Download data from AKShare (~30 min, requires stable network)
 python data/download.py
 
-# Step 2: Clean and deduplicate
+# Step 2: Clean, deduplicate, and tag time-varying universe
 python data/clean.py
 
 # Step 3: Build factor panel
-python -c "
-from factors.value import build as v
-from factors.momentum import build as m
-from factors.quality import build as q
-from factors.volatility import build as vol
-from factors.liquidity import build as liq
-from factors.preprocess import build_factor_panel
-build_factor_panel()
-"
+python factors/preprocess.py
 
 # Step 4: Factor testing
 python testing/ic_analysis.py
@@ -175,7 +168,7 @@ output/
 ├── portfolio/            # NAV curves and performance for 3 baseline strategies
 ├── ml/                   # Feature importance, NAV CSVs, model comparison
 └── analysis/
-    ├── strategy_comparison.png   # 6-strategy + benchmark NAV chart
+    ├── strategy_comparison.png   # 8-strategy + benchmark NAV chart
     └── performance_table.csv     # Final results table
 ```
 
@@ -196,5 +189,17 @@ output/
 
 1. **Liquidity premium dominates in A-shares**: AMIHUD illiquidity factor consistently outperforms all other single factors, driven by retail investor herding into liquid small-caps.
 2. **Value factors are reversed**: BP/EP show *negative* long-short returns, opposite to developed markets. A-share retail speculation inflates low-BM (growth) stocks.
-3. **Linear models generalize well**: Ridge regression achieves the best risk-adjusted return (Sharpe=1.018, IR=1.771), confirming monthly factor signals are largely linear.
-4. **ML adds alpha over baseline**: All 5 ML models outperform the ICIR-weighted baseline (~17.4% Ann), with XGBoost/RandomForest topping 21% annual return.
+3. **Ridge achieves the best risk-adjusted return**: Among ML models, Ridge (Ann=12.32%, Sharpe=0.624, MaxDD=-22.4%) delivers the lowest drawdown and highest IR (1.420), confirming monthly factor signals are largely linear.
+4. **Survivorship bias matters**: After filtering to time-varying CSI 300 constituents, ML model returns dropped ~7-8pp vs. the static-universe backtest, highlighting the importance of proper universe construction.
+
+---
+
+## Limitations & Future Work
+
+- **Universe**: Restricted to CSI 300 (large-cap). Extending to CSI 500 / CSI 1000 would test factor robustness in mid/small-cap segments where mispricing is larger.
+- **Survivorship bias (partial fix)**: Only constituent *entry* dates are available from AKShare; stocks removed from the index cannot be identified. The current fix eliminates "future entry" bias but not "past exit" bias.
+- **Benchmark approximation**: The total return benchmark uses a flat 2.0% annual dividend yield added to the price index. Time-varying dividend yields or an ETF-based proxy (510300 back-adjusted) would be more precise.
+- **Risk model**: Current portfolio uses simple equal-weight Top-N. A proper risk model (Barra-style multi-factor risk decomposition with optimization) would improve risk-adjusted returns.
+- **Trading frictions**: Suspended stocks, daily price limits, and market impact are not modeled. Real-world implementation would require T+1 settlement and limit-up unfillable handling.
+- **Factor coverage**: 16 factors across 5 categories. High-frequency factors (intraday volatility, order flow imbalance) and alternative data factors are not included.
+- **ML overfitting risk**: Walk-forward mitigates but does not eliminate overfitting. Cross-market validation (e.g., applying same factors to HK or US markets) would provide stronger evidence.

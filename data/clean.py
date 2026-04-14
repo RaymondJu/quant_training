@@ -324,11 +324,22 @@ def main():
     print("\n[Step 4] 合并行业分类")
     monthly = merge_industry(monthly)
     
-    # Step 5: 保存
-    print("\n[Step 5] 保存面板数据")
+    # Step 5: 标记时变 universe（基于成分股纳入日期）
+    print("\n[Step 5] 标记时变 CSI300 成分 (in_universe)")
+    from data.universe import get_universe_at_month
+    unique_months = sorted(monthly["year_month"].unique())
+    universe_cache = {ym: get_universe_at_month(ym) for ym in unique_months}
+    monthly["in_universe"] = monthly.apply(
+        lambda r: r["stock_code"] in universe_cache[r["year_month"]], axis=1
+    )
+    n_in = monthly["in_universe"].sum()
+    print(f"[INFO] in_universe=True: {n_in}/{len(monthly)} ({n_in/len(monthly):.1%})")
+
+    # Step 6: 保存
+    print("\n[Step 6] 保存面板数据")
     save_panel(monthly)
     
-    print("\n数据清洗 Pipeline 完成！✓")
+    print("\n数据清洗 Pipeline 完成!")
 
 
 if __name__ == "__main__":
