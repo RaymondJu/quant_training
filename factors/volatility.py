@@ -4,7 +4,7 @@
 
 数据来源:
     - daily_prices: 日收益率
-    - index_hs300_daily: 沪深300日收益率 (CAPM回归用)
+    - benchmark daily index: 当前股票池对应指数日收益率 (CAPM回归用)
 
 Usage:
     python factors/volatility.py
@@ -53,7 +53,7 @@ def build_volatility_factors():
     vol_monthly.columns = ["stock_code", "year_month", "VOL_20D"]
 
     # ------ IVOL: CAPM 残差波动率 ------
-    print("[volatility] 加载沪深300指数日收益...")
+    print("[volatility] 加载基准指数日收益...")
     from data.benchmark import load_benchmark_daily_returns
     idx_daily = load_benchmark_daily_returns()  # [date, index_ret]
 

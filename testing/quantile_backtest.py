@@ -37,8 +37,6 @@ def load_factor_panel():
     df = pd.read_parquet(path)
     if "year_month" not in df.columns and "year_month_str" in df.columns:
         df["year_month"] = pd.PeriodIndex(df["year_month_str"], freq="M")
-    if "in_universe" in df.columns:
-        df = df[df["in_universe"]].copy()
     return df
 
 

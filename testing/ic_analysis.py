@@ -35,13 +35,10 @@ FACTOR_COLS = ["EP", "BP", "SP", "MOM_12_1", "REV_1M", "ROE_TTM",
 
 
 def load_factor_panel():
-    """加载预处理后的因子面板（仅保留时变 universe 内的股票）"""
     path = os.path.join(PROCESSED_DIR, "factor_panel.parquet")
     df = pd.read_parquet(path)
     if "year_month" not in df.columns and "year_month_str" in df.columns:
         df["year_month"] = pd.PeriodIndex(df["year_month_str"], freq="M")
-    if "in_universe" in df.columns:
-        df = df[df["in_universe"]].copy()
     return df
 
 

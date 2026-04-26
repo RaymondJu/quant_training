@@ -32,8 +32,6 @@ def load_all_factors():
     """加载所有因子并合并到月度面板"""
     panel = load_monthly_panel()
     base_cols = ["stock_code", "year_month", "ret_next_month", "industry"]
-    if "in_universe" in panel.columns:
-        base_cols.append("in_universe")
     base = panel[base_cols].copy()
 
     factor_files = {
@@ -70,7 +68,7 @@ def winsorize_mad(series, n_mad=MAD_MULTIPLIER):
 def standardize(series):
     """Z-score标准化"""
     mean = series.mean()
-    std = series.std()
+    std = series.std(ddof=0)
     if std == 0 or pd.isna(std):
         return series * 0
     return (series - mean) / std
@@ -197,7 +195,7 @@ def preprocess_factors(neutralize_mktcap=False):
 
     # 输出列
     output_cols = (["stock_code", "year_month"] + available_factors +
-                   ["ret_next_month", "industry", "industry_l1", "in_universe"])
+                   ["ret_next_month", "industry", "industry_l1"])
     if mktcap_col and mktcap_col in result.columns:
         output_cols.append(mktcap_col)
     result = result[[c for c in output_cols if c in result.columns]]

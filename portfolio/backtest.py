@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import OUTPUT_DIR, TOP_N_STOCKS, TRANSACTION_COST
+from config import INDEX_NAME, OUTPUT_DIR, TOP_N_STOCKS, TRANSACTION_COST
 from data.benchmark import load_benchmark_returns_df as _load_benchmark
 from portfolio.combine import (
     build_dynamic_factor_weights,
@@ -30,7 +30,7 @@ plt.rcParams["axes.unicode_minus"] = False
 
 
 def load_benchmark_returns() -> pd.DataFrame:
-    """Load HS300 monthly returns (total return) aligned to the signal month."""
+    """Load benchmark monthly returns aligned to the signal month."""
     return _load_benchmark()
 
 
@@ -45,9 +45,6 @@ def select_top_n_portfolio(
     score_col: str = "composite_score",
 ) -> pd.DataFrame:
     """Select the top-N stocks by score in each rebalance month."""
-    # 时变 universe 过滤: 仅从当期成分股中选股
-    if "in_universe" in scored_panel.columns:
-        scored_panel = scored_panel[scored_panel["in_universe"]].copy()
     rows = []
     for ym, grp in scored_panel.groupby("year_month"):
         ranked = (
@@ -77,7 +74,7 @@ def plot_backtest_curves(result_df: pd.DataFrame, save_dir: str, method: str) ->
     dates = result_df["year_month_ts"]
 
     axes[0].plot(dates, result_df["strategy_nav"], label=f"{method} strategy", linewidth=1.8)
-    axes[0].plot(dates, result_df["benchmark_nav"], label="HS300", linewidth=1.6)
+    axes[0].plot(dates, result_df["benchmark_nav"], label=INDEX_NAME, linewidth=1.6)
     axes[0].set_title(f"Portfolio Backtest - {method}")
     axes[0].set_ylabel("NAV")
     axes[0].grid(True, alpha=0.3)
@@ -85,7 +82,7 @@ def plot_backtest_curves(result_df: pd.DataFrame, save_dir: str, method: str) ->
 
     axes[1].plot(dates, result_df["excess_nav"], color="#d32f2f", linewidth=1.6)
     axes[1].axhline(y=1.0, color="black", linestyle="--", alpha=0.3)
-    axes[1].set_title("Excess NAV vs HS300")
+    axes[1].set_title(f"Excess NAV vs {INDEX_NAME}")
     axes[1].set_ylabel("Excess NAV")
     axes[1].grid(True, alpha=0.3)
     axes[1].xaxis.set_major_locator(mdates.YearLocator())

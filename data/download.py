@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 数据下载脚本
-从 AKShare 下载沪深300成分股的行情、财务、行业分类等数据
+从 AKShare 下载指数成分股的行情、财务、行业分类等数据
 支持断点续传，已下载的数据会跳过
 
 Usage:
@@ -11,24 +11,33 @@ import os
 import sys
 import random
 
-# ===== 绕过代理：VPN开着也能直连国内数据接口 =====
-for key in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
-            'ALL_PROXY', 'all_proxy']:
-    os.environ.pop(key, None)
-os.environ['NO_PROXY'] = '*'
+# ===== Proxy handling =====
+# Default is direct connection. To use a local proxy:
+#   $env:AKSHARE_PROXY="http://127.0.0.1:7897"; python data/download.py
+_AKSHARE_PROXY = os.environ.get("AKSHARE_PROXY", "").strip()
+if _AKSHARE_PROXY:
+    os.environ["HTTP_PROXY"] = _AKSHARE_PROXY
+    os.environ["HTTPS_PROXY"] = _AKSHARE_PROXY
+    _REQUEST_PROXIES = {"http": _AKSHARE_PROXY, "https": _AKSHARE_PROXY}
+else:
+    for key in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
+                'ALL_PROXY', 'all_proxy']:
+        os.environ.pop(key, None)
+    os.environ['NO_PROXY'] = '*'
+    _REQUEST_PROXIES = {'http': '', 'https': ''}
 
-# Monkey-patch requests，强制所有请求不走代理
+# Monkey-patch requests so AKShare consistently uses the selected proxy mode.
 import requests as _requests
 _original_get = _requests.get
 _original_post = _requests.post
 
 def _get_no_proxy(*args, **kwargs):
-    kwargs.setdefault('proxies', {'http': '', 'https': ''})
+    kwargs.setdefault('proxies', _REQUEST_PROXIES)
     kwargs.setdefault('timeout', 30)
     return _original_get(*args, **kwargs)
 
 def _post_no_proxy(*args, **kwargs):
-    kwargs.setdefault('proxies', {'http': '', 'https': ''})
+    kwargs.setdefault('proxies', _REQUEST_PROXIES)
     kwargs.setdefault('timeout', 30)
     return _original_post(*args, **kwargs)
 
@@ -45,8 +54,19 @@ from tqdm import tqdm
 # 添加项目根目录到 path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
-    RAW_DIR, START_DATE, END_DATE, INDEX_CODE,
-    DOWNLOAD_SLEEP, MAX_RETRY
+    BENCHMARK_ETF,
+    INDEX_CODE,
+    INDEX_NAME,
+    INDEX_SYMBOL,
+    RAW_DIR,
+    START_DATE,
+    END_DATE,
+    DOWNLOAD_SLEEP,
+    MAX_RETRY,
+    get_benchmark_nav_path,
+    get_benchmark_qfq_path,
+    get_constituents_path,
+    get_index_daily_path,
 )
 
 
@@ -63,24 +83,29 @@ def retry_backoff_sleep(retry_num):
     time.sleep(wait)
 
 
-def get_hs300_stocks():
-    """获取沪深300成分股列表"""
-    cache_file = os.path.join(RAW_DIR, "hs300_stocks.csv")
+def get_index_stocks():
+    """获取当前配置指数的成分股列表"""
+    cache_file = get_constituents_path()
     
     if os.path.exists(cache_file):
         df = pd.read_csv(cache_file, dtype=str)
-        print(f"[INFO] 从缓存加载沪深300成分股: {len(df)} 只")
+        print(f"[INFO] 从缓存加载 {INDEX_NAME} 成分股: {len(df)} 只")
         return df
     
-    print("[INFO] 正在从 AKShare 获取沪深300成分股列表...")
+    print(f"[INFO] 正在从 AKShare 获取 {INDEX_NAME} 成分股列表...")
     df = ak.index_stock_cons(symbol=INDEX_CODE)
     # 统一列名
     df.columns = ["stock_code", "stock_name", "date"]
     # 补全6位代码
     df["stock_code"] = df["stock_code"].astype(str).str.zfill(6)
     df.to_csv(cache_file, index=False, encoding="utf-8-sig")
-    print(f"[INFO] 获取沪深300成分股 {len(df)} 只, 已保存至 {cache_file}")
+    print(f"[INFO] 获取 {INDEX_NAME} 成分股 {len(df)} 只, 已保存至 {cache_file}")
     return df
+
+
+def get_hs300_stocks():
+    """Legacy wrapper kept for compatibility."""
+    return get_index_stocks()
 
 
 def download_daily_prices(stock_list):
@@ -360,7 +385,7 @@ def download_industry_classification(stock_list):
         print(f"[ERROR] 获取行业分类历史失败: {e}")
         latest = pd.DataFrame()
     
-    # Step 3: 匹配沪深300成分股
+    # Step 3: 匹配指数成分股
     hs300_codes = set(stock_list["stock_code"].tolist())
     stock_names = dict(zip(stock_list["stock_code"], stock_list.get("stock_name", [""] * len(stock_list))))
     
@@ -400,33 +425,111 @@ def download_industry_classification(stock_list):
 
 
 def download_index_daily():
-    """下载沪深300指数日行情 (用于计算CAPM beta / 特质波动率)"""
-    cache_file = os.path.join(RAW_DIR, "index_hs300_daily.parquet")
+    """下载当前配置指数的日行情 (用于 CAPM beta / 特质波动率)."""
+    cache_file = get_index_daily_path()
     
     if os.path.exists(cache_file):
-        print("[INFO] 沪深300指数日行情已存在, 跳过")
+        print(f"[INFO] {INDEX_NAME} 指数日行情已存在, 跳过")
         return
     
-    print("[INFO] 正在下载沪深300指数日行情...")
-    df = ak.stock_zh_index_daily(symbol="sh000300")
+    print(f"[INFO] 正在下载 {INDEX_NAME} 指数日行情...")
+    df = ak.stock_zh_index_daily(symbol=INDEX_SYMBOL)
     if df is not None and len(df) > 0:
         df.columns = ["date", "open", "high", "low", "close", "volume"]
         df["date"] = pd.to_datetime(df["date"])
         df.to_parquet(cache_file, index=False)
-        print(f"[INFO] 沪深300指数日行情已保存: {len(df)} 条")
+        print(f"[INFO] {INDEX_NAME} 指数日行情已保存: {len(df)} 条")
     else:
-        print("[ERROR] 沪深300指数日行情下载失败")
+        print(f"[ERROR] {INDEX_NAME} 指数日行情下载失败")
+
+
+def download_benchmark_etf_proxy():
+    """Download benchmark ETF cumulative NAV for total-return proxy."""
+    nav_cache = get_benchmark_nav_path()
+    qfq_cache = get_benchmark_qfq_path()
+
+    if os.path.exists(nav_cache):
+        print(f"[INFO] {BENCHMARK_ETF} ETF cumulative NAV already exists, skip")
+        return
+
+    print(f"[INFO] Downloading {BENCHMARK_ETF} ETF cumulative NAV...")
+    try:
+        nav = ak.fund_etf_fund_info_em(
+            fund=BENCHMARK_ETF,
+            start_date=START_DATE,
+            end_date=END_DATE,
+        )
+        if nav is not None and len(nav) > 0:
+            nav = nav.rename(columns={
+                "净值日期": "date",
+                "单位净值": "unit_nav",
+                "累计净值": "close",
+                "日增长率": "daily_growth_pct",
+            })
+            nav["date"] = pd.to_datetime(nav["date"])
+            nav["unit_nav"] = pd.to_numeric(nav.get("unit_nav"), errors="coerce")
+            nav["close"] = pd.to_numeric(nav["close"], errors="coerce")
+            if "daily_growth_pct" in nav.columns:
+                nav["daily_growth_pct"] = pd.to_numeric(nav["daily_growth_pct"], errors="coerce")
+            nav = nav.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+            nav.to_parquet(nav_cache, index=False)
+            print(f"[INFO] {BENCHMARK_ETF} ETF cumulative NAV saved: {len(nav)} rows -> {nav_cache}")
+            return
+    except Exception as exc:
+        print(f"[WARN] {BENCHMARK_ETF} cumulative NAV download failed: {exc}")
+
+    if os.path.exists(qfq_cache):
+        print(f"[INFO] {BENCHMARK_ETF} ETF qfq daily prices already exist, skip")
+        return
+
+    print(f"[INFO] Falling back to {BENCHMARK_ETF} ETF qfq daily prices...")
+    qfq = ak.fund_etf_hist_em(
+        symbol=BENCHMARK_ETF,
+        period="daily",
+        start_date=START_DATE,
+        end_date=END_DATE,
+        adjust="qfq",
+    )
+    if qfq is None or len(qfq) == 0:
+        print(f"[ERROR] {BENCHMARK_ETF} ETF benchmark proxy download failed")
+        return
+
+    qfq = qfq.rename(columns={
+        "日期": "date",
+        "开盘": "open",
+        "收盘": "close",
+        "最高": "high",
+        "最低": "low",
+        "成交量": "volume",
+        "成交额": "amount",
+        "振幅": "amplitude",
+        "涨跌幅": "pct_change",
+        "涨跌额": "change",
+        "换手率": "turnover",
+    })
+    qfq["date"] = pd.to_datetime(qfq["date"])
+    for col in ["open", "high", "low", "close", "volume", "amount"]:
+        if col in qfq.columns:
+            qfq[col] = pd.to_numeric(qfq[col], errors="coerce")
+    qfq = qfq.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+    qfq.to_parquet(qfq_cache, index=False)
+    print(f"[INFO] {BENCHMARK_ETF} ETF qfq daily prices saved: {len(qfq)} rows -> {qfq_cache}")
+
+
+def download_hs300_etf_adjusted():
+    """Legacy wrapper kept for compatibility."""
+    download_benchmark_etf_proxy()
 
 
 def main():
     print("=" * 60)
     print("  A股多因子选股项目 — 数据下载")
-    print(f"  范围: 沪深300 | 时间: {START_DATE}–{END_DATE}")
+    print(f"  范围: {INDEX_NAME} | 时间: {START_DATE}–{END_DATE}")
     print(f"  AKShare 版本: {ak.__version__}")
     print("=" * 60)
     
-    # Step 1: 获取沪深300成分股
-    stock_list = get_hs300_stocks()
+    # Step 1: 获取指数成分股
+    stock_list = get_index_stocks()
     
     # Step 2: 下载日行情 (后复权)
     print("\n" + "=" * 40)
@@ -458,11 +561,12 @@ def main():
     print("=" * 40)
     download_industry_classification(stock_list)
     
-    # Step 7: 下载沪深300指数行情
+    # Step 7: 下载 benchmark 行情
     print("\n" + "=" * 40)
-    print("  Step 7: 下载沪深300指数日行情")
+    print("  Step 7: 下载 benchmark 日行情")
     print("=" * 40)
     download_index_daily()
+    download_benchmark_etf_proxy()
     
     print("\n" + "=" * 60)
     print("  数据下载全部完成！")

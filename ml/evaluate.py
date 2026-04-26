@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import OUTPUT_DIR, PROCESSED_DIR, TOP_N_STOCKS, TRANSACTION_COST
+from config import INDEX_NAME, OUTPUT_DIR, PROCESSED_DIR, TOP_N_STOCKS, TRANSACTION_COST
 from portfolio.performance import summarize_returns
 
 plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
@@ -51,7 +51,7 @@ def load_factor_panel_returns() -> pd.DataFrame:
 
 
 def load_benchmark_returns() -> pd.Series:
-    """月末沪深300全收益率，index=year_month（信号月，即持仓月）。"""
+    """月末基准全收益率，index=year_month（信号月，即持仓月）。"""
     from data.benchmark import load_benchmark_returns as _load
     return _load()
 
@@ -146,7 +146,7 @@ def load_baseline_nav(method: str = "ic") -> pd.Series:
 
 
 def plot_comparison(lgbm_nav: pd.DataFrame, baseline_ret: pd.Series, save_dir: str):
-    """LightGBM 净值 vs ic baseline vs 沪深300"""
+    """LightGBM 净值 vs ic baseline vs benchmark."""
     # 共同区间
     lgbm_start = lgbm_nav["year_month"].min()
     if not baseline_ret.empty:
@@ -163,9 +163,9 @@ def plot_comparison(lgbm_nav: pd.DataFrame, baseline_ret: pd.Series, save_dir: s
     # LightGBM
     ax.plot(lgbm_dates, lgbm_slice["nav"].values, label="LightGBM", color="#d32f2f", linewidth=2)
 
-    # 沪深300
+    # benchmark
     ax.plot(lgbm_dates, lgbm_slice["benchmark_nav"].values,
-            label="HS300 Benchmark", color="black", linewidth=1.5, linestyle="--")
+            label=f"{INDEX_NAME} Benchmark", color="black", linewidth=1.5, linestyle="--")
 
     # ic baseline（如有）
     if not baseline_ret.empty:
@@ -175,7 +175,7 @@ def plot_comparison(lgbm_nav: pd.DataFrame, baseline_ret: pd.Series, save_dir: s
         ax.plot(bl_dates, bl_nav.values, label="Multi-factor (IC)", color="#1976d2",
                 linewidth=2, linestyle="-.")
 
-    ax.set_title("Strategy NAV Comparison: LightGBM vs Linear Multi-factor vs HS300")
+    ax.set_title(f"Strategy NAV Comparison: LightGBM vs Linear Multi-factor vs {INDEX_NAME}")
     ax.set_ylabel("Cumulative NAV")
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)

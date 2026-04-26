@@ -36,7 +36,7 @@ from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import LGBM_TRAIN_WINDOW, OUTPUT_DIR, PROCESSED_DIR, TOP_N_STOCKS, TRANSACTION_COST
+from config import INDEX_NAME, LGBM_TRAIN_WINDOW, OUTPUT_DIR, PROCESSED_DIR, TOP_N_STOCKS, TRANSACTION_COST
 from portfolio.performance import summarize_returns
 
 plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
@@ -133,9 +133,14 @@ def load_factor_panel() -> pd.DataFrame:
 
 
 def load_benchmark_returns() -> pd.Series:
-    """Load HS300 monthly total-return benchmark (unified via data.benchmark)."""
+    """Load benchmark monthly total-return series (unified via data.benchmark)."""
     from data.benchmark import load_benchmark_returns as _load
     return _load()
+
+
+def _compute_turnover(prev_holdings: dict[str, float], curr_holdings: dict[str, float]) -> float:
+    union = set(prev_holdings) | set(curr_holdings)
+    return 0.5 * sum(abs(curr_holdings.get(code, 0.0) - prev_holdings.get(code, 0.0)) for code in union)
 
 
 # =====================================================
@@ -292,17 +297,12 @@ def backtest_from_scores(
         被剔除股票追加到此列表。
     """
     ret_cols = ["stock_code", "year_month", "ret_next_month"]
-    if "in_universe" in panel.columns:
-        ret_cols.append("in_universe")
     returns = panel[ret_cols]
     scored = predictions.merge(returns, on=["stock_code", "year_month"], how="inner")
-    # 时变 universe 过滤: 仅从当期成分股中选股
-    if "in_universe" in scored.columns:
-        scored = scored[scored["in_universe"]].copy()
     months = sorted(scored["year_month"].unique())
 
     ret_list, to_list, month_list = [], [], []
-    prev_holdings: set[str] = set()
+    prev_holdings: dict[str, float] = {}
 
     for ym in months:
         cross = scored[scored["year_month"] == ym].dropna(subset=["score", "ret_next_month"])
@@ -318,16 +318,15 @@ def backtest_from_scores(
             top = apply_top_risk_filter(top, ym, risk_panel, filter_pct, log_records)
         # ────────────────────────────────────────────────────────────────
 
-        enter = set(top) - prev_holdings
-        exit_ = prev_holdings - set(top)
-        to = (len(enter) + len(exit_)) / max(len(prev_holdings | set(top)), 1)
-        trade_cost = to * cost
+        curr_holdings = {code: 1.0 / len(top) for code in top}
+        to = _compute_turnover(prev_holdings, curr_holdings) if prev_holdings else 1.0
+        trade_cost = to * 2 * cost
 
         period_ret = cross[cross["stock_code"].isin(top)]["ret_next_month"].mean()
         ret_list.append(period_ret - trade_cost)
         to_list.append(to)
         month_list.append(ym)
-        prev_holdings = set(top)
+        prev_holdings = curr_holdings
 
     idx = pd.PeriodIndex(month_list, freq="M")
     return pd.Series(ret_list, index=idx), pd.Series(to_list, index=idx)
@@ -400,13 +399,13 @@ def plot_model_nav_comparison(
         dates = [p.to_timestamp() for p in nav.index]
         ax.plot(dates, nav.values, label=name, color=colors.get(name, "gray"), linewidth=2)
 
-    # 沪深300
+    # benchmark
     bm = benchmark[benchmark.index >= common_start] if common_start else benchmark
     bm_nav = (1 + bm.fillna(0)).cumprod()
     ax.plot([p.to_timestamp() for p in bm_nav.index], bm_nav.values,
-            label="HS300", color="black", linewidth=1.5, linestyle="--")
+            label=INDEX_NAME, color="black", linewidth=1.5, linestyle="--")
 
-    ax.set_title("ML Model NAV Comparison (Walk-Forward, Common Window)")
+    ax.set_title(f"ML Model NAV Comparison vs {INDEX_NAME} (Common Window)")
     ax.set_ylabel("Cumulative NAV")
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)

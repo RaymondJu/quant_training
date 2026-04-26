@@ -23,7 +23,7 @@ from sklearn.linear_model import Ridge
 from xgboost import XGBRegressor
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import LGBM_TRAIN_WINDOW, OUTPUT_DIR
+from config import INDEX_NAME, LGBM_TRAIN_WINDOW, OUTPUT_DIR
 from ml.model_comparison import (
     FACTOR_COLS,
     VAL_WINDOW,
@@ -428,7 +428,7 @@ def plot_default_vs_tuned(strategy_dict: dict[str, pd.Series], benchmark: pd.Ser
 
     bm = benchmark[benchmark.index >= common_start] if common_start else benchmark
     bm_nav = (1 + bm.fillna(0)).cumprod()
-    ax.plot([p.to_timestamp() for p in bm_nav.index], bm_nav.values, color="gray", linewidth=1.5, linestyle="-.", label="HS300")
+    ax.plot([p.to_timestamp() for p in bm_nav.index], bm_nav.values, color="gray", linewidth=1.5, linestyle="-.", label=INDEX_NAME)
 
     ax.set_title("Default vs Tuned ML Models")
     ax.set_ylabel("Cumulative NAV")

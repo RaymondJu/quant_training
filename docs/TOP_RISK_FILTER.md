@@ -1,206 +1,125 @@
-# Top Risk Filter — 顶部风险过滤层
+# Top Risk Filter
 
-> 文档日期：2026-04-12  
-> 实验窗口：2017-10 ~ 2025-11（98 个月，与 ML 统一口径）  
-> 已知局限：静态 CSI300 成分股，存在幸存者偏差，此处不修复
-
----
-
-## 1. 动机
-
-AMIHUD 非流动性因子是本项目最强的 alpha 信号（ICIR=0.227，FM t=3.85***），其经济逻辑是**流动性溢价**：在月频持有周期内，持有低流动性股票可获得持续超额收益。
-
-这一发现的反面含义是：**近期成交量激增、价格大幅拉升的"热门票"是高风险信号**——它们往往在流动性涌入后迅速反转，成为多因子组合回撤的主要来源（2018、2022、2024 年三次大回撤均有此特征）。
-
-顶部风险过滤层的设计逻辑：在 Top-N 选股完成后，从候选池中**剔除风控分最高的 20% 股票**（即最近涨幅最大、成交最活跃、价格最偏离均线的股票），以降低最大回撤、提升 Calmar 比率的稳健性。
-
-**关键约束**：
-- 风控层不参与 alpha 因子合成，不影响选股打分过程
-- 接入点在 Top-N 选出后、权重计算前（`portfolio/backtest.py` L115、`ml/model_comparison.py` L297）
-- `ENABLE_TOP_RISK_FILTER=False` 时完全跳过，复现原始结果
+> Document date: 2026-04-25  
+> Experiment window: `2017-10 ~ 2025-11`  
+> Universe: **static CSI 300 constituent list**  
+> Known limitation: survivorship bias is present and explicitly acknowledged  
+> Benchmark: `510300 ETF` cumulative NAV proxy
 
 ---
 
-## 2. 风控因子定义
+## 1. Purpose
 
-| 因子 | 公式 | 经济含义 | 数据源 |
-|------|------|---------|--------|
-| **BIAS_20** | `月末close / 20日SMA − 1` | 价格偏离均线程度（超买信号） | `daily_prices.close` |
-| **UPSHADOW_20** | 20日均值：`clip((high − max(open,close)) / (high−low+ε), 0)` | 卖压（上影线 = 多头力量衰竭） | `daily_prices.high/open/close/low` |
-| **VOL_SPIKE_6M** | `当月日均成交额 / 过去6月日均成交额均值 − 1` | 异常资金涌入程度 | `daily_prices.turnover` |
-| **RET_6M** | 过去6个月累计对数收益率 | 近期涨幅（动量过热） | `daily_prices.pct_change` |
+The TopRisk layer is a **post-selection filter**, not an alpha model.
 
-**预处理**：每月截面独立执行 MAD 截尾 → Z-score 标准化（无行业中性化）→ 等权合成为 `TOP_RISK_SCORE`。
+Workflow:
 
-**时间对齐**：`year_month=t` 的风控分来自 `t-1` 月末数据（`shift(1)` 处理），严格避免 look-ahead bias。
+1. Select Top-N stocks from the baseline alpha or ML model.
+2. Compute `TOP_RISK_SCORE`.
+3. Remove the highest-risk tail of the selected names.
+4. Reweight the remaining names equally.
 
-**缺失值处理**：新股/停牌股缺失风控分时，填横截面中位数（风险中性，不直接剔除）。
+The intent is to reduce exposure to short-term overheated stocks rather than to improve the core signal model itself.
 
 ---
 
-## 3. Ablation 实验结果
+## 2. Risk Factors
 
-> 统一窗口：2017-10 ~ 2025-11（98个月）；剔除比例：20%
+The current risk score uses four monthly risk descriptors:
 
-| 策略 | 年化收益 | Sharpe | 最大回撤 | Calmar | 月胜率 | 换手率 |
-|------|---------|--------|---------|--------|--------|--------|
-| ICIR (no filter) | 19.27% | 0.953 | -23.81% | 0.809 | 58.2% | 33.4% |
-| **ICIR + TopRisk** | **19.55%** | **0.977** | **-22.25%** | **0.879** | 59.2% | 42.4% |
-| Ridge (no filter) | 20.20% | 1.018 | -20.85% | 0.969 | 62.2% | 46.1% |
-| **Ridge + TopRisk** | 18.84% | 0.960 | **-19.20%** | **0.982** | 60.2% | 56.7% |
-| XGBoost (no filter) | 21.09% | 1.000 | -22.47% | 0.938 | 59.2% | 70.1% |
-| XGBoost + TopRisk | 20.41% | 0.987 | -22.43% | 0.910 | 58.2% | 76.1% |
+| Factor | Meaning |
+|---|---|
+| `BIAS_20` | price deviation from 20-day moving average |
+| `UPSHADOW_20` | recent upper-shadow pressure |
+| `VOL_SPIKE_6M` | abnormal turnover spike vs. recent history |
+| `RET_6M` | trailing 6-month cumulative return |
 
-**主要发现**：
-- **ICIR**：加入风控后年化收益微增（+28bp），最大回撤改善 156bp，Calmar 从 0.809 → 0.879（+8.7%）
-- **Ridge**：年化收益小幅下降（−136bp），但最大回撤改善 165bp，Calmar 从 0.969 → 0.982（+1.3%）
-- **XGBoost**：风控效果不显著（最大回撤几乎不变），原因可能是 XGBoost 预测本身已较好规避了热门票
-- **换手率**：风控层使各策略换手率普遍上升 8~9 pp（ICIR: 33.4%→42.4%；Ridge: 46.1%→56.7%；XGBoost: 70.1%→76.1%），原因是每月剔除旧仓位后权重重算触发额外调仓
-- 总结：风控层对以**线性组合为主的策略（ICIR）效果最明显**（Sharpe 与 Calmar 双升）；对 Ridge/XGBoost 的效益有限，详见下方讨论
-
-**Ridge + TopRisk 的 Sharpe-Calmar 权衡**
-
-从绝对收益角度，启用风控层后 Ridge 年化收益下降 136bp（20.20%→18.84%），Sharpe 从 1.018 降至 0.960（−5.7%）。这一下降幅度显著超过了 Calmar 的改善（0.969→0.982，+1.3%）。因此，Ridge 是否启用过滤层应取决于投资人的风险偏好和产品约束，而不是给出单一强结论。
-
-原因分析：
-- Ridge 的预测已隐含动量/反转信息，选出的 Top-N 与"近期热门票"天然重叠度偏低，风控层"二次筛"带来的增量价值有限
-- 每月强制剔除 20% 使换手率升至 56.7%（+10.6 pp），加剧摩擦成本；Information Ratio 同步下降（1.771→1.697，−4.2%），alpha 一致性受损
-- Calmar 的微幅改善本质上来自最大回撤缩减 165bp，这对多数风险预算约束而言不足以覆盖 136bp 的年化收益损失
-
-建议口径：
-- 若投资人更关注收益效率、Sharpe 和信息比率，Ridge 更适合关闭 TopRisk，因为过滤层降低年化收益和 Sharpe。
-- 若产品有明确的最大回撤约束（如 −20%）或更看重尾部风险缓冲，Ridge 可以条件性启用 TopRisk，因为 MaxDD 从 −20.85% 改善到 −19.20%，Calmar 小幅提升。
-- 因此，`ENABLE_TOP_RISK_FILTER` 应按策略和风险预算选择性启用：**ICIR 倾向开启**（Sharpe+Calmar 双升），**Ridge 取决于风险偏好**，**XGBoost 倾向关闭**（收益和 Sharpe 均下降）。
-
----
-
-## 4. Factor Weighting Iteration
-
-在 v1 方案中，`TOP_RISK_SCORE` 使用 4 个风控子因子的等权合成：
+v1 risk score:
 
 ```text
 TOP_RISK_SCORE_v1 = mean(BIAS_20_z, UPSHADOW_20_z, VOL_SPIKE_6M_z, RET_6M_z)
 ```
 
-基于 `exclusion_driver_analysis.csv` 的驱动因子分析，进一步测试了 v2 IC 加权方案。v2 的思想是：如果某个风控因子主导剔除的股票在后续 1 个月更容易下跌，则提高该因子的风控权重；如果后续下跌占比不高，则降低甚至反向处理该因子。
-
-权重定义为：
-
-```text
-weight_{factor,t} = P(ret_next_month < 0 | factor dominates historical v1 exclusions before t) - 0.5
-```
-
-为避免 look-ahead bias，`t` 月的权重只使用 `t` 月以前的历史剔除样本估计。训练样本来自 v1 等权 TopRisk 的 `excluded_stocks_log.csv`，并按 `(month, stock_code)` 去重，与驱动因子分析口径一致。
-
-98 个月样本内，walk-forward 平均权重大致为：
-
-| 因子 | 平均权重 | 解释 |
-|---|---:|---|
-| BIAS_20 | +0.050 | 最高，说明价格偏离均线的过热信号最有拦截价值 |
-| RET_6M | +0.022 | 正权重，近期累计涨幅也有一定拦截价值 |
-| UPSHADOW_20 | -0.002 | 接近 0，单独拦截价值不稳定 |
-| VOL_SPIKE_6M | -0.016 | 接近 0 且偏负，异常放量容易误伤后续仍上涨的股票 |
-
-但绩效结果显示，v2 并没有优于 v1：
-
-| 策略 | 年化收益 | Sharpe | 最大回撤 | Calmar | 信息比率 | 换手率 |
-|---|---:|---:|---:|---:|---:|---:|
-| ICIR (no filter) | 19.27% | 0.953 | -23.81% | 0.809 | 1.414 | 33.4% |
-| ICIR + TopRisk v1 equal | 19.55% | 0.977 | -22.25% | 0.879 | 1.470 | 42.4% |
-| ICIR + TopRisk v2 IC-weighted | 16.59% | 0.824 | -24.45% | 0.679 | 1.224 | 44.4% |
-
-结论：**等权是更稳健的选择**。虽然 v2 的权重方向符合 driver analysis 的直觉，即 BIAS_20 权重最高、VOL_SPIKE_6M 接近 0 或为负，但动态权重把风控分过度集中到少数历史上有效的拦截信号，导致剔除名单发生较大变化，收益、Sharpe、回撤和 Calmar 均弱于 v1。当前正式方案应继续保留 v1 等权 TopRisk；v2 仅作为一次权重迭代实验记录。
-
-相关输出：
-- 风控因子相关矩阵：[`../output/ablation/risk_factor_correlation.csv`](../output/ablation/risk_factor_correlation.csv)
-- 风控因子相关热力图：[`../output/ablation/risk_factor_corr.png`](../output/ablation/risk_factor_corr.png)
-- v2 对比结果：[`../output/ablation/v2_performance.csv`](../output/ablation/v2_performance.csv)
-- v2 walk-forward 权重：[`../output/ablation/v2_risk_factor_weights.csv`](../output/ablation/v2_risk_factor_weights.csv)
+The risk factors are shifted by one period before use so the filter does not consume future information.
 
 ---
 
-## 5. 图表
+## 3. Current Ablation Result
 
-- NAV 对比图：[`../output/ablation/nav_comparison.png`](../output/ablation/nav_comparison.png)
-- 回撤对比图（含 2018/2022/2024 标注）：[`../output/ablation/drawdown_comparison.png`](../output/ablation/drawdown_comparison.png)
-- 被剔除股票记录：[`../output/ablation/excluded_stocks_log.csv`](../output/ablation/excluded_stocks_log.csv)
+Source: `output/ablation/performance_comparison.csv`
 
----
+| Strategy | Ann. Return | Sharpe | Max DD | Calmar |
+|---|---:|---:|---:|---:|
+| ICIR (no filter) | 18.96% | 0.940 | -24.01% | 0.790 |
+| ICIR + TopRisk | 18.86% | 0.950 | -23.22% | 0.812 |
+| Ridge (no filter) | 19.89% | 0.994 | -21.64% | 0.919 |
+| Ridge + TopRisk | 18.15% | 0.905 | -19.81% | 0.917 |
+| XGBoost (no filter) | 19.94% | 0.942 | -25.53% | 0.781 |
+| XGBoost + TopRisk | 18.18% | 0.879 | -23.90% | 0.761 |
 
-## 6. 敏感性分析
+Interpretation:
 
-遍历 `TOP_RISK_FILTER_PCT ∈ {10%, 15%, 20%, 25%, 30%}`：
+- `ICIR + TopRisk` improves Sharpe, drawdown, and Calmar slightly, but does not improve return.
+- `Ridge + TopRisk` reduces drawdown but gives up too much return and Sharpe.
+- `XGBoost + TopRisk` also trades return for a moderate drawdown improvement.
 
-| 剔除比例 | ICIR Sharpe | ICIR Calmar | Ridge Sharpe | Ridge Calmar |
-|---------|------------|------------|-------------|-------------|
-| 10% | 0.920 | 0.781 | 0.960 | 0.960 |
-| 15% | 0.930 | 0.794 | 0.954 | 0.947 |
-| **20%** | **0.977** | **0.879** | **0.960** | **0.982** |
-| 25% | 1.014 | 0.912 | 0.953 | 1.058 |
-| 30% | 0.950 | 0.933 | 1.011 | 1.176 |
-
-图表：[`../output/ablation/sensitivity.png`](../output/ablation/sensitivity.png)
-
-**结论**：
-- ICIR：Sharpe 在 25% 达峰，但 30% 时下降；Calmar 单调改善
-- Ridge：Calmar 随剔除比例单调增加，在 30% 时达 1.18（可能对测试期有一定过拟合）
-- 综合考虑，**20% 是保守且稳健的选择**：相对无过滤版本有明确改善，且不需要在测试集上选参数
+So in the **current final version**, TopRisk should be framed as a **drawdown-control layer**, not as a return-enhancement layer.
 
 ---
 
-## 7. Sanity Check
+## 4. Conditional Recommendation
 
-> 目的：验证被风控层剔除的确实是"最近暴涨的热门票"，而非数据bug误伤正常股票。
+### ICIR
 
-从 `excluded_stocks_log.csv` 抽取 3 个月，检查被剔除股票的近期涨幅。
+TopRisk is acceptable for `ICIR` because it slightly improves risk-adjusted metrics without a large performance collapse.
 
-### 抽查 1：2020-02（新冠疫情前夕）
+### Ridge
 
-| 股票代码 | 风控分 | 排名 | 过去6月涨幅 | BIAS_20 | 备注 |
-|---------|--------|------|------------|---------|------|
-| 601689 | 2.027 | 1 | **+98.2%** | -18.1% | 拓普集团（汽零龙头，Q4 2019大涨） |
-| 002460 | 1.955 | 2 | **+124.1%** | -3.9% | 赣锋锂业（锂电概念） |
-| 603799 | 1.686 | 4 | **+53.5%** | -19.2% | 华友钴业（钴锂材料） |
+TopRisk is **not universally recommended** for Ridge.
 
-> 注：BIAS_20 为负是因为 2020-02 COVID 导致价格从高位急跌，但 6M 涨幅显示这些票在疫情前已大幅拉升。风控层在 1 月末（= 2020-01 月末数据，shift后应用于 2020-02）正确识别了这批高风险票。
+Current comparison:
 
-### 抽查 2：2021-06（消费/科技热）
+- `Ridge`: 19.89% / Sharpe 0.994 / MaxDD -21.64%
+- `Ridge + TopRisk`: 18.15% / Sharpe 0.905 / MaxDD -19.81%
 
-| 股票代码 | 风控分 | 排名 | 过去6月涨幅 | BIAS_20 |
-|---------|--------|------|------------|---------|
-| 000408 | 1.779 | 1 | **+175.0%** | +6.4% |
-| 601377 | 1.641 | 2 | — | — |
+Interpretation:
 
-> 000408 在 6 个月内上涨 175%，是典型的短期炒作票，被风控层排名第一剔除，完全合理。
+- If the investor values **return efficiency and Sharpe**, keep Ridge without TopRisk.
+- If the investor has a **harder drawdown preference**, TopRisk can still be described as a conditional option.
 
-### 抽查 3：2023-01（熊市反弹初期）
+### XGBoost
 
-| 股票代码 | 风控分 | 排名 | 过去6月涨幅 | BIAS_20 | 主驱动因子 |
-|---------|--------|------|------------|---------|-----------|
-| 002252 | 1.734 | 1 | +5.0% | -1.4% | VOL_SPIKE_6M（异常成交放量） |
-| 603369 | 1.536 | 2 | — | — | — |
+The same logic applies to XGBoost:
 
-> 002252 的近期涨幅和 BIAS 均不突出，被剔除的主要原因是 VOL_SPIKE_6M（近期成交额相对历史均值出现明显放量）。这表明风控层在 2023-01 主要识别的是"异常放量但尚未体现在价格上"的风险，属于领先信号，逻辑上合理但偏保守。
+- without TopRisk: stronger return
+- with TopRisk: somewhat lower tail risk
 
-**Sanity Check 结论**：总体通过。2020-02 和 2021-06 样本中被剔除的股票确实是近期大幅拉升的热门票；2023-01 样本部分由成交量异常驱动，属于风控层的领先型拦截，逻辑合理但结果较难直接验证。
+So this should also be presented as a conditional choice rather than a universally better configuration.
 
 ---
 
-## 8. 技术备注
+## 5. v1 Equal vs v2 IC-Weighted
 
-**重复记录说明**：`excluded_stocks_log.csv` 中每月 20 条记录来自三个策略（ICIR、Ridge、XGBoost）共用同一 `log_records` 列表，同一股票若被多个策略同时剔除会出现重复行。分析时按 `(month, stock_code)` 去重即可。
+Source: `output/ablation/v2_performance.csv`
 
-**代码入口**：
-```python
-# 生成风控因子面板（约1分钟）
-python factors/risk.py
+| Strategy | Ann. Return | Sharpe | Max DD | Calmar |
+|---|---:|---:|---:|---:|
+| ICIR (no filter) | 18.96% | 0.940 | -24.01% | 0.790 |
+| **ICIR + TopRisk v1 equal** | **18.86%** | **0.950** | **-23.22%** | **0.812** |
+| ICIR + TopRisk v2 IC-weighted | 16.39% | 0.802 | -24.36% | 0.673 |
 
-# 运行全部 ablation 实验（含敏感性分析，约10-15分钟）
-python analysis/ablation_top_risk.py
-```
+Conclusion:
 
-**开关控制**（`config.py`）：
-```python
-ENABLE_TOP_RISK_FILTER = True   # 设为 False 时完全跳过，精确复现原始结果
-TOP_RISK_FILTER_PCT    = 0.20   # 推荐范围 0.15~0.25
-```
+- v2 IC-weighted risk aggregation underperforms v1 equal-weight.
+- The more complicated weighting rule did not improve the final portfolio.
+- The official project conclusion remains: **equal-weight is the more robust choice**.
+
+---
+
+## 6. What To Say Externally
+
+Recommended wording:
+
+> I added a TopRisk post-filter to remove the hottest and most overextended names after the main model selected Top-N stocks. In the final static-CSI300 version, this layer mainly helped drawdown control for the ICIR baseline, but it did not consistently improve return. For Ridge and XGBoost it became a conditional risk-preference choice rather than a universally better setting. I also tested a more complex IC-weighted v2 risk score, but it underperformed the simple equal-weight version.
+
+This is the correct final positioning for this document. Do not describe TopRisk as a universally return-improving layer.

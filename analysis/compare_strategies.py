@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import OUTPUT_DIR
+from config import INDEX_NAME, OUTPUT_DIR
 from portfolio.performance import summarize_returns
 
 plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
@@ -66,7 +66,7 @@ def load_strategy_returns(rel_path: str) -> pd.Series:
 
 
 def load_benchmark_returns() -> pd.Series:
-    """沪深300月度全收益率，index=year_month（信号月）"""
+    """Benchmark monthly total return, indexed by signal month."""
     from data.benchmark import load_benchmark_returns as _load
     return _load()
 
@@ -89,7 +89,7 @@ def build_performance_table(
         sorted(set().union(*[s.index for s in strategy_dict.values() if not s.empty]))
     ).dropna()
     bm_perf = summarize_returns(bm_aligned)
-    bm_perf.name = "HS300 (Benchmark)"
+    bm_perf.name = f"{INDEX_NAME} (Benchmark)"
     rows.append(bm_perf)
 
     table = pd.DataFrame(rows)
@@ -144,7 +144,7 @@ def plot_comparison(
     bm = benchmark[benchmark.index >= common_start] if common_start else benchmark
     bm_nav = (1 + bm.fillna(0)).cumprod()
     bm_dates = [p.to_timestamp() for p in bm_nav.index]
-    ax1.plot(bm_dates, bm_nav.values, label="HS300", color="gray",
+    ax1.plot(bm_dates, bm_nav.values, label=INDEX_NAME, color="gray",
              linewidth=1.5, linestyle=":")
     ax1.set_ylabel("Cumulative NAV")
     ax1.set_title("Strategy NAV Comparison (Common Window)")
@@ -153,7 +153,7 @@ def plot_comparison(
     ax1.xaxis.set_major_locator(mdates.YearLocator())
     ax1.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
 
-    # 下图：各 ML 模型超额收益（相对HS300）
+    # 下图：各 ML 模型超额收益（相对 benchmark）
     ml_names = {
         "LightGBM": "#d32f2f",
         "CatBoost": "#6a1b9a",
@@ -175,8 +175,8 @@ def plot_comparison(
         plotted_any = True
     if plotted_any:
         ax2.axhline(1, color="black", linestyle="--", alpha=0.4)
-        ax2.set_ylabel("Excess NAV vs HS300")
-        ax2.set_title("ML Model Excess Return vs HS300")
+        ax2.set_ylabel(f"Excess NAV vs {INDEX_NAME}")
+        ax2.set_title(f"ML Model Excess Return vs {INDEX_NAME}")
         ax2.legend(fontsize=8)
         ax2.grid(True, alpha=0.3)
         ax2.xaxis.set_major_locator(mdates.YearLocator())

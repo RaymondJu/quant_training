@@ -1,18 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-统一 Benchmark 加载模块
+Unified benchmark loader.
 
-提供两个接口:
-  load_benchmark_returns()       — 月度 benchmark 收益 (PeriodIndex, signal month 对齐)
-  load_benchmark_daily_returns() — 日度 benchmark 收益 (用于 CAPM 回归)
-
-数据来源优先级:
-  1. index_hs300_total_return.parquet (全收益指数, 若已下载)
-  2. index_hs300_daily.parquet (价格指数) + 年化 2.0% 股息率近似
-
-CSI300 历史平均股息率约 2.0-2.5%，取 2.0% 为保守估计。
-近似方法: monthly_ret_total_return = monthly_ret_price + 0.02 / 12
-验证: 2015-07 ~ 2025-11 (125月) 基准年化约 3.9%（合理区间 3-5%）
+Priority:
+  1. Exact total return index file, if locally provided.
+  2. Benchmark ETF cumulative NAV proxy.
+  3. Benchmark ETF adjusted close proxy.
+  4. Price index + flat 2.0% annual dividend fallback.
 """
 from __future__ import annotations
 
@@ -22,66 +16,89 @@ import sys
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import RAW_DIR
+from config import (
+    BENCHMARK_ETF,
+    INDEX_NAME,
+    get_benchmark_nav_path,
+    get_benchmark_qfq_path,
+    get_index_daily_path,
+    get_total_return_index_path,
+)
 
-# CSI300 平均年化股息率（保守估计）
-_CSI300_ANNUAL_DIV_YIELD = 0.02
+
+_ANNUAL_DIVIDEND_FALLBACK = 0.02
+
+
+def _standardize_daily_frame(df: pd.DataFrame, source: str) -> pd.DataFrame:
+    rename_map = {
+        "日期": "date",
+        "收盘": "close",
+        "开盘": "open",
+        "最高": "high",
+        "最低": "low",
+        "成交量": "volume",
+        "成交额": "amount",
+        "净值日期": "date",
+        "累计净值": "close",
+        "单位净值": "unit_nav",
+        "日增长率": "daily_growth_pct",
+    }
+    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}).copy()
+    required = {"date", "close"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Benchmark file missing required columns: {sorted(missing)}")
+    df["date"] = pd.to_datetime(df["date"])
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df = df.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+    df["_source"] = source
+    return df
 
 
 def _load_index_daily() -> pd.DataFrame:
-    """加载日频指数数据，返回含 [date, close] 的 DataFrame。"""
-    # 优先: 全收益指数
-    tr_path = os.path.join(RAW_DIR, "index_hs300_total_return.parquet")
+    tr_path = get_total_return_index_path()
     if os.path.exists(tr_path):
-        df = pd.read_parquet(tr_path)
-        df["date"] = pd.to_datetime(df["date"])
-        df["_source"] = "total_return"
-        return df.sort_values("date").reset_index(drop=True)
+        return _standardize_daily_frame(pd.read_parquet(tr_path), f"{INDEX_NAME}_total_return_index")
 
-    # Fallback: 价格指数
-    price_path = os.path.join(RAW_DIR, "index_hs300_daily.parquet")
+    nav_path = get_benchmark_nav_path()
+    if os.path.exists(nav_path):
+        return _standardize_daily_frame(pd.read_parquet(nav_path), f"etf_{BENCHMARK_ETF}_cumulative_nav")
+
+    qfq_path = get_benchmark_qfq_path()
+    if os.path.exists(qfq_path):
+        return _standardize_daily_frame(pd.read_parquet(qfq_path), f"etf_{BENCHMARK_ETF}_qfq")
+
+    price_path = get_index_daily_path()
     if not os.path.exists(price_path):
         raise FileNotFoundError(
-            f"Benchmark 数据不存在: {price_path}\n"
-            "请先运行: python data/download.py"
+            f"Benchmark data not found: {price_path}\n"
+            "Run python data/download.py first."
         )
-    df = pd.read_parquet(price_path)
-    df["date"] = pd.to_datetime(df["date"])
-    df["_source"] = "price_index"
-    return df.sort_values("date").reset_index(drop=True)
+    return _standardize_daily_frame(pd.read_parquet(price_path), "price_index_dividend_proxy")
+
+
+def get_benchmark_source() -> str:
+    return str(_load_index_daily()["_source"].iloc[0])
 
 
 def load_benchmark_returns() -> pd.Series:
     """
-    加载月度 benchmark 收益（全收益或近似），返回 pd.Series。
-
-    - index: PeriodIndex(freq='M'), 为 **signal month**（已 shift -1）
-    - values: float, 月度收益率
-
-    与 portfolio/backtest.py 的对齐逻辑一致：
-    signal_month=t → 月末 t+1 的 close pct_change 作为 t 的 benchmark return。
+    Load monthly benchmark returns aligned to the signal month.
     """
     idx = _load_index_daily()
-    is_price_only = (idx["_source"].iloc[0] == "price_index")
+    source = str(idx["_source"].iloc[0])
 
     month_end = idx.groupby(idx["date"].dt.to_period("M")).tail(1).copy()
     month_end["ret"] = month_end["close"].pct_change()
+    if source == "price_index_dividend_proxy":
+        month_end["ret"] = month_end["ret"] + _ANNUAL_DIVIDEND_FALLBACK / 12
 
-    # 如果是价格指数，叠加股息率近似
-    if is_price_only:
-        month_end["ret"] = month_end["ret"] + _CSI300_ANNUAL_DIV_YIELD / 12
-
-    # signal month 对齐: year_month = 数据月 - 1
     month_end["year_month"] = month_end["date"].dt.to_period("M") - 1
     s = month_end.set_index("year_month")["ret"].dropna()
     return pd.Series(s.values, index=pd.PeriodIndex(s.index, freq="M"), name="benchmark")
 
 
 def load_benchmark_returns_df() -> pd.DataFrame:
-    """
-    返回 DataFrame 格式（兼容 portfolio/backtest.py 的旧接口）。
-    列: [year_month (Period), benchmark_monthly_ret (float)]
-    """
     s = load_benchmark_returns()
     return pd.DataFrame({
         "year_month": s.index,
@@ -91,17 +108,13 @@ def load_benchmark_returns_df() -> pd.DataFrame:
 
 def load_benchmark_daily_returns() -> pd.DataFrame:
     """
-    日频 benchmark 收益，用于 CAPM 回归（IVOL / BETA_60D）。
-    返回 DataFrame: [date, index_ret]
+    Daily index returns for CAPM beta / IVOL estimation.
 
-    注意: 日级别股息率影响极小（~0.008%/天），此处不做近似调整。
-    继续使用价格指数日收益，不影响 beta 估计。
+    Factor regressions continue to use the cash index, not ETF NAV.
     """
-    price_path = os.path.join(RAW_DIR, "index_hs300_daily.parquet")
+    price_path = get_index_daily_path()
     if not os.path.exists(price_path):
-        raise FileNotFoundError(f"Benchmark 日频数据不存在: {price_path}")
-    idx = pd.read_parquet(price_path)
-    idx["date"] = pd.to_datetime(idx["date"])
-    idx = idx.sort_values("date")
+        raise FileNotFoundError(f"Daily index data not found: {price_path}")
+    idx = _standardize_daily_frame(pd.read_parquet(price_path), "price_index")
     idx["index_ret"] = idx["close"].pct_change()
     return idx[["date", "index_ret"]].dropna().reset_index(drop=True)

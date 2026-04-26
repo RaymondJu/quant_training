@@ -22,6 +22,16 @@ data/processed/*.parquet
 # ===== Output (keep images and summary CSVs, skip large nav files) =====
 # Uncomment below if you want to exclude ALL output:
 # output/
+output/run_logs/
+output/csi500/
+output/audit/
+
+# ===== Local experiment/runtime artifacts =====
+.claude/
+catboost_info/
+data/raw/csi500/
+run_csi300_full_pipeline.py
+run_csi300_full_pipeline.ps1
 
 # ===== Virtual environments =====
 venv/

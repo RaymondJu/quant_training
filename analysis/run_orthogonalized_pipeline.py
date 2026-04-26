@@ -19,7 +19,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import LGBM_TRAIN_WINDOW, OUTPUT_DIR, PROCESSED_DIR, RAW_DIR, TOP_N_STOCKS, TRANSACTION_COST
+from config import INDEX_NAME, LGBM_TRAIN_WINDOW, OUTPUT_DIR, PROCESSED_DIR, RAW_DIR, TOP_N_STOCKS, TRANSACTION_COST
 from factors.orthogonalize import (
     ORTHOGONALIZATION_SPECS,
     compute_factor_correlation,
@@ -342,7 +342,7 @@ def plot_strategy_lines(strategy_dict: dict[str, pd.Series], benchmark: pd.Serie
 
     bm = benchmark[benchmark.index >= common_start] if common_start else benchmark
     bm_nav = (1 + bm.fillna(0)).cumprod()
-    ax.plot([p.to_timestamp() for p in bm_nav.index], bm_nav.values, label="HS300", color="black", linewidth=1.5)
+    ax.plot([p.to_timestamp() for p in bm_nav.index], bm_nav.values, label=INDEX_NAME, color="black", linewidth=1.5)
     ax.set_title(title)
     ax.set_ylabel("Cumulative NAV")
     ax.grid(True, alpha=0.3)
@@ -372,7 +372,7 @@ def build_combined_analysis(benchmark: pd.Series) -> pd.DataFrame:
 
     union_index = sorted(set().union(*[series.index for series in strategy_dict.values() if not series.empty]))
     benchmark_perf = summarize_returns(benchmark.reindex(union_index).dropna())
-    benchmark_perf.name = "HS300 (Benchmark)"
+    benchmark_perf.name = f"{INDEX_NAME} (Benchmark)"
     rows.append(benchmark_perf)
 
     table = pd.DataFrame(rows)

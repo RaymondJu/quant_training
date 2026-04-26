@@ -30,10 +30,12 @@ def build_momentum_factors():
 
     # MOM_12_1: 过去12个月累计收益, 剔除最近1个月
     # = sum(log_ret from t-12 to t-2) = rolling_12_sum - current_log_ret
-    df["rolling_12_log"] = df.groupby("stock_code")["log_ret"].transform(
+    # MOM_12_1: use the stricter t-12 to t-2 window when predicting month t+1.
+    df["lagged_log_ret"] = df.groupby("stock_code")["log_ret"].shift(1)
+    df["rolling_12_log"] = df.groupby("stock_code")["lagged_log_ret"].transform(
         lambda x: x.rolling(12, min_periods=12).sum()
     )
-    df["MOM_12_1"] = np.exp(df["rolling_12_log"] - df["log_ret"]) - 1
+    df["MOM_12_1"] = np.exp(df["rolling_12_log"] - df["lagged_log_ret"]) - 1
 
     # REV_1M: 当月收益率 (短期反转效应)
     df["REV_1M"] = df["ret_monthly"]
