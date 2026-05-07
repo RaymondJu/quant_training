@@ -1,31 +1,31 @@
-# Development Notes
+# 开发记录
 
-## Current Final State
+## 当前最终状态
 
-This file records the **current accepted project state** after code fixes and the latest full rerun.
+本文档记录代码修复和最近一次完整重跑之后，项目当前被接受的正式状态。
 
-### Scope
+### 项目口径
 
-- Universe: static CSI 300 constituent list
-- Benchmark: 510300 ETF cumulative NAV proxy
-- Baseline window: `2015-07 ~ 2025-11`
-- ML window: `2017-10 ~ 2025-11`
+- 股票池：静态沪深 300 成分股名单
+- 基准：510300 ETF 累计净值 proxy
+- 传统多因子区间：`2015-07 ~ 2025-11`
+- 机器学习区间：`2017-10 ~ 2025-11`
 
-### Why This Scope Was Frozen
+### 为什么冻结这个口径
 
-Historical CSI 300 constituent entry/exit reconstruction was attempted but did not stabilize into a reliable workflow. Instead of continuing to present a half-fixed dynamic universe, the project now keeps the static-universe version and explicitly acknowledges survivorship bias.
+项目曾尝试重建沪深 300 历史成分股进入和剔除路径，但这个流程没有稳定到足够可靠的程度。与其继续展示一个半修复的动态股票池版本，不如保留当前静态股票池版本，并明确承认幸存者偏差。
 
-### Fixed Issues
+### 已修复问题
 
-- Momentum factor `MOM_12_1` timing corrected
-- `standardize()` uses `ddof=0`
-- `clean.py` documents approximate PIT risk on estimated announce dates
-- ML turnover calculation matches the main backtest definition
-- Benchmark uses 510300 cumulative NAV proxy rather than the old fixed-dividend approximation
+- 动量因子 `MOM_12_1` 的时间定义已修正。
+- `standardize()` 已改为使用 `ddof=0`。
+- `clean.py` 已说明估算公告日带来的近似 PIT 风险。
+- 机器学习换手率计算已与主回测定义统一。
+- 基准已改为 510300 累计净值 proxy，不再使用旧版固定股息近似。
 
-### Latest Headline Results
+### 最新核心结果
 
-| Strategy | Ann. Return | Sharpe | Max DD |
+| 策略 | 年化收益 | Sharpe | 最大回撤 |
 |---|---:|---:|---:|
 | Equal-weight | 16.99% | 0.768 | -28.04% |
 | IC-weight | 17.10% | 0.785 | -26.69% |
@@ -35,15 +35,15 @@ Historical CSI 300 constituent entry/exit reconstruction was attempted but did n
 | Ridge | 19.89% | 0.994 | -21.64% |
 | Benchmark | 3.19% | 0.184 | -33.24% |
 
-### Current Interpretation
+### 当前解释
 
-- Traditional baseline winner: `ICIR-weight`
-- ML return winner: `RandomForest`
-- ML stability winner: `Ridge`
-- TopRisk helps mainly as a drawdown-control layer
-- TopRisk v2 IC-weighted version is worse than v1 equal-weight
+- 传统 baseline 最优方案：`ICIR-weight`
+- 机器学习收益最高模型：`RandomForest`
+- 机器学习稳定性最优模型：`Ridge`
+- TopRisk 主要作为回撤控制层发挥作用。
+- TopRisk v2 IC 加权版本弱于 v1 等权版本。
 
-### Files To Trust
+### 当前可信文件
 
 - `README.md`
 - `PROJECT_SUMMARY_FOR_INTERVIEW.md`
@@ -53,4 +53,4 @@ Historical CSI 300 constituent entry/exit reconstruction was attempted but did n
 - `output/ablation/performance_comparison.csv`
 - `output/ablation/v2_performance.csv`
 
-If another document contradicts the above, treat that older document as outdated.
+如果其他文档与上述内容矛盾，应优先认为旧文档已经过期。

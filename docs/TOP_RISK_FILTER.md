@@ -1,125 +1,125 @@
-# Top Risk Filter
+# TopRisk 风控过滤层
 
-> Document date: 2026-04-25  
-> Experiment window: `2017-10 ~ 2025-11`  
-> Universe: **static CSI 300 constituent list**  
-> Known limitation: survivorship bias is present and explicitly acknowledged  
-> Benchmark: `510300 ETF` cumulative NAV proxy
-
----
-
-## 1. Purpose
-
-The TopRisk layer is a **post-selection filter**, not an alpha model.
-
-Workflow:
-
-1. Select Top-N stocks from the baseline alpha or ML model.
-2. Compute `TOP_RISK_SCORE`.
-3. Remove the highest-risk tail of the selected names.
-4. Reweight the remaining names equally.
-
-The intent is to reduce exposure to short-term overheated stocks rather than to improve the core signal model itself.
+> 文档日期：2026-04-25
+> 实验区间：`2017-10 ~ 2025-11`
+> 股票池：**静态沪深 300 成分股名单**
+> 已知局限：存在幸存者偏差，并已明确披露
+> 基准：`510300 ETF` 累计净值 proxy
 
 ---
 
-## 2. Risk Factors
+## 1. 设计目的
 
-The current risk score uses four monthly risk descriptors:
+TopRisk 层是一个**选股后的过滤器**，不是独立 alpha 模型。
 
-| Factor | Meaning |
+基本流程：
+
+1. 先从传统 alpha 或 ML 模型中选出 Top-N 股票。
+2. 计算每只股票的 `TOP_RISK_SCORE`。
+3. 剔除风险分最高的一部分股票。
+4. 对剩余股票重新等权持有。
+
+这个设计的目标是降低组合对短期过热股票的暴露，而不是直接改进核心预测信号本身。
+
+---
+
+## 2. 风险因子
+
+当前风险分使用四个月频风险描述变量：
+
+| 因子 | 含义 |
 |---|---|
-| `BIAS_20` | price deviation from 20-day moving average |
-| `UPSHADOW_20` | recent upper-shadow pressure |
-| `VOL_SPIKE_6M` | abnormal turnover spike vs. recent history |
-| `RET_6M` | trailing 6-month cumulative return |
+| `BIAS_20` | 股价相对 20 日均线的偏离程度 |
+| `UPSHADOW_20` | 近期上影线压力 |
+| `VOL_SPIKE_6M` | 相对历史水平的异常放量程度 |
+| `RET_6M` | 过去 6 个月累计收益 |
 
-v1 risk score:
+v1 风险分定义：
 
 ```text
 TOP_RISK_SCORE_v1 = mean(BIAS_20_z, UPSHADOW_20_z, VOL_SPIKE_6M_z, RET_6M_z)
 ```
 
-The risk factors are shifted by one period before use so the filter does not consume future information.
+所有风险因子在使用前都会滞后一期间，避免过滤层使用未来信息。
 
 ---
 
-## 3. Current Ablation Result
+## 3. 当前消融结果
 
-Source: `output/ablation/performance_comparison.csv`
+数据来源：`output/ablation/performance_comparison.csv`
 
-| Strategy | Ann. Return | Sharpe | Max DD | Calmar |
+| 策略 | 年化收益 | Sharpe | 最大回撤 | Calmar |
 |---|---:|---:|---:|---:|
-| ICIR (no filter) | 18.96% | 0.940 | -24.01% | 0.790 |
+| ICIR，不加过滤 | 18.96% | 0.940 | -24.01% | 0.790 |
 | ICIR + TopRisk | 18.86% | 0.950 | -23.22% | 0.812 |
-| Ridge (no filter) | 19.89% | 0.994 | -21.64% | 0.919 |
+| Ridge，不加过滤 | 19.89% | 0.994 | -21.64% | 0.919 |
 | Ridge + TopRisk | 18.15% | 0.905 | -19.81% | 0.917 |
-| XGBoost (no filter) | 19.94% | 0.942 | -25.53% | 0.781 |
+| XGBoost，不加过滤 | 19.94% | 0.942 | -25.53% | 0.781 |
 | XGBoost + TopRisk | 18.18% | 0.879 | -23.90% | 0.761 |
 
-Interpretation:
+解释：
 
-- `ICIR + TopRisk` improves Sharpe, drawdown, and Calmar slightly, but does not improve return.
-- `Ridge + TopRisk` reduces drawdown but gives up too much return and Sharpe.
-- `XGBoost + TopRisk` also trades return for a moderate drawdown improvement.
+- `ICIR + TopRisk` 小幅改善 Sharpe、最大回撤和 Calmar，但没有提高年化收益。
+- `Ridge + TopRisk` 降低了最大回撤，但牺牲了较多年化收益和 Sharpe。
+- `XGBoost + TopRisk` 同样是用收益换取一定的回撤改善。
 
-So in the **current final version**, TopRisk should be framed as a **drawdown-control layer**, not as a return-enhancement layer.
+因此在**当前最终版本**中，TopRisk 应被表述为**回撤控制层**，而不是收益增强层。
 
 ---
 
-## 4. Conditional Recommendation
+## 4. 条件性建议
 
 ### ICIR
 
-TopRisk is acceptable for `ICIR` because it slightly improves risk-adjusted metrics without a large performance collapse.
+TopRisk 对 `ICIR` 是可以接受的，因为它在没有明显损害收益的情况下，小幅改善了风险调整指标。
 
 ### Ridge
 
-TopRisk is **not universally recommended** for Ridge.
+TopRisk 对 Ridge **不应被绝对推荐**。
 
-Current comparison:
+当前对比：
 
-- `Ridge`: 19.89% / Sharpe 0.994 / MaxDD -21.64%
-- `Ridge + TopRisk`: 18.15% / Sharpe 0.905 / MaxDD -19.81%
+- `Ridge`：19.89% / Sharpe 0.994 / 最大回撤 -21.64%
+- `Ridge + TopRisk`：18.15% / Sharpe 0.905 / 最大回撤 -19.81%
 
-Interpretation:
+解释：
 
-- If the investor values **return efficiency and Sharpe**, keep Ridge without TopRisk.
-- If the investor has a **harder drawdown preference**, TopRisk can still be described as a conditional option.
+- 如果投资人更重视**收益效率和 Sharpe**，应保留不加 TopRisk 的 Ridge。
+- 如果投资人有**更强的回撤约束偏好**，TopRisk 可以作为条件性选择。
 
 ### XGBoost
 
-The same logic applies to XGBoost:
+XGBoost 也适用同样逻辑：
 
-- without TopRisk: stronger return
-- with TopRisk: somewhat lower tail risk
+- 不加 TopRisk：收益更强。
+- 加 TopRisk：尾部风险略有下降。
 
-So this should also be presented as a conditional choice rather than a universally better configuration.
+所以它也应被表述为条件性风险偏好选择，而不是绝对更优配置。
 
 ---
 
-## 5. v1 Equal vs v2 IC-Weighted
+## 5. v1 等权与 v2 IC 加权
 
-Source: `output/ablation/v2_performance.csv`
+数据来源：`output/ablation/v2_performance.csv`
 
-| Strategy | Ann. Return | Sharpe | Max DD | Calmar |
+| 策略 | 年化收益 | Sharpe | 最大回撤 | Calmar |
 |---|---:|---:|---:|---:|
-| ICIR (no filter) | 18.96% | 0.940 | -24.01% | 0.790 |
-| **ICIR + TopRisk v1 equal** | **18.86%** | **0.950** | **-23.22%** | **0.812** |
-| ICIR + TopRisk v2 IC-weighted | 16.39% | 0.802 | -24.36% | 0.673 |
+| ICIR，不加过滤 | 18.96% | 0.940 | -24.01% | 0.790 |
+| **ICIR + TopRisk v1 等权** | **18.86%** | **0.950** | **-23.22%** | **0.812** |
+| ICIR + TopRisk v2 IC 加权 | 16.39% | 0.802 | -24.36% | 0.673 |
 
-Conclusion:
+结论：
 
-- v2 IC-weighted risk aggregation underperforms v1 equal-weight.
-- The more complicated weighting rule did not improve the final portfolio.
-- The official project conclusion remains: **equal-weight is the more robust choice**.
+- v2 IC 加权风险分合成弱于 v1 等权合成。
+- 更复杂的加权规则没有改善最终组合表现。
+- 项目正式结论保持为：**等权风险分是更稳健的选择**。
 
 ---
 
-## 6. What To Say Externally
+## 6. 对外推荐表述
 
-Recommended wording:
+推荐说法：
 
-> I added a TopRisk post-filter to remove the hottest and most overextended names after the main model selected Top-N stocks. In the final static-CSI300 version, this layer mainly helped drawdown control for the ICIR baseline, but it did not consistently improve return. For Ridge and XGBoost it became a conditional risk-preference choice rather than a universally better setting. I also tested a more complex IC-weighted v2 risk score, but it underperformed the simple equal-weight version.
+> 我在主模型选出 Top-N 股票之后，增加了一个 TopRisk 后处理过滤层，用来剔除短期过热、风险分较高的股票。在最终静态沪深 300 版本中，这一层主要改善了 ICIR baseline 的回撤控制，但没有稳定提高收益。对 Ridge 和 XGBoost 来说，TopRisk 更像是一个投资人风险偏好的条件选择，而不是普遍更优配置。我也测试了更复杂的 IC 加权 v2 风险分，但结果弱于简单等权版本。
 
-This is the correct final positioning for this document. Do not describe TopRisk as a universally return-improving layer.
+这是本文档的最终定位。不要把 TopRisk 描述成普遍提高收益的风控增强模块。
