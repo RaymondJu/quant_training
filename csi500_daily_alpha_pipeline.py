@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Daily technical-factor experiment.
+"""CSI500 daily price-volume alpha experiment.
 
 This is intentionally separate from the monthly factor pipeline:
     - one row per stock per trading day
-    - daily technical/price-volume features only
+    - daily price-volume alpha features only
     - forward 5-trading-day return as the default target
     - 5-trading-day rebalance by default
 """
@@ -68,17 +68,17 @@ def _forward_compound_return(returns: pd.Series, horizon: int) -> pd.Series:
 
 
 def build_daily_panel(horizon: int = 5) -> pd.DataFrame:
-    print("[daily-tech] loading daily prices...")
+    print("[daily-alpha] loading daily prices...")
     daily = load_daily_prices().copy()
     daily = daily.sort_values(["stock_code", "date"]).reset_index(drop=True)
     daily["ret_1d"] = daily["pct_change"] / 100.0
     daily["dollar_volume"] = daily["turnover"].replace(0, np.nan)
 
-    print("[daily-tech] loading benchmark returns...")
+    print("[daily-alpha] loading benchmark returns...")
     benchmark = load_benchmark_daily_returns()
     daily = daily.merge(benchmark, on="date", how="left")
 
-    print("[daily-tech] computing daily technical features...")
+    print("[daily-alpha] computing daily price-volume alpha features...")
     parts = []
     for stock_code, group in daily.groupby("stock_code", sort=False):
         g = group.sort_values("date").copy()
@@ -113,7 +113,7 @@ def build_daily_panel(horizon: int = 5) -> pd.DataFrame:
     panel = pd.concat(parts, ignore_index=True)
     panel = panel.dropna(subset=[f"ret_fwd_{horizon}d"]).copy()
 
-    print("[daily-tech] cross-sectional winsorize/zscore...")
+    print("[daily-alpha] cross-sectional winsorize/zscore...")
     for col in FEATURE_COLS:
         lower = panel.groupby("date")[col].transform(lambda x: x.quantile(0.01))
         upper = panel.groupby("date")[col].transform(lambda x: x.quantile(0.99))
@@ -121,12 +121,12 @@ def build_daily_panel(horizon: int = 5) -> pd.DataFrame:
     panel = _zscore_cross_section(panel, FEATURE_COLS)
     panel[FEATURE_COLS] = panel[FEATURE_COLS].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-    print(f"[daily-tech] panel rows={len(panel):,}, dates={panel['date'].nunique()}, stocks={panel['stock_code'].nunique()}")
+    print(f"[daily-alpha] panel rows={len(panel):,}, dates={panel['date'].nunique()}, stocks={panel['stock_code'].nunique()}")
     return panel.sort_values(["date", "stock_code"]).reset_index(drop=True)
 
 
 def compute_daily_ic(panel: pd.DataFrame, target_col: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    print("[daily-tech] computing daily rank IC...")
+    print("[daily-alpha] computing daily rank IC...")
     records = []
     for date, group in panel.groupby("date", sort=True):
         row = {"date": date}
@@ -197,7 +197,7 @@ def backtest_ic_weight(
     cost_bps: float,
     size_neutral_score: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    print("[daily-tech] backtesting IC-weight portfolio...")
+    print("[daily-alpha] backtesting IC-weight portfolio...")
     dates = sorted(panel["date"].unique())
     rebalance_dates = _make_rebalance_dates(dates, warmup_days=ic_window + 60, step=horizon)
     ic_indexed = ic.set_index("date")
@@ -243,7 +243,7 @@ def backtest_ridge(
     cost_bps: float,
     size_neutral_score: bool = False,
 ) -> pd.DataFrame:
-    print("[daily-tech] backtesting Ridge walk-forward...")
+    print("[daily-alpha] backtesting Ridge walk-forward...")
     dates = sorted(panel["date"].unique())
     rebalance_dates = _make_rebalance_dates(dates, warmup_days=start_days, step=horizon)
 
@@ -299,7 +299,7 @@ def backtest_lightgbm(
     max_train_rows: int = 60_000,
     size_neutral_score: bool = False,
 ) -> pd.DataFrame:
-    print("[daily-tech] backtesting LightGBM walk-forward...")
+    print("[daily-alpha] backtesting LightGBM walk-forward...")
     dates = sorted(panel["date"].unique())
     rebalance_dates = _make_rebalance_dates(dates, warmup_days=start_days, step=horizon)
 
@@ -427,7 +427,7 @@ def main() -> None:
     parser.add_argument("--lgbm-max-train-rows", type=int, default=60_000)
     args = parser.parse_args()
 
-    experiment = "daily_tech"
+    experiment = "daily_alpha"
     processed_dir = _scoped_dir(BASE_PROCESSED_DIR, UNIVERSE_ID, experiment)
     output_dir = _scoped_dir(BASE_OUTPUT_DIR, UNIVERSE_ID, experiment)
     processed_dir.mkdir(parents=True, exist_ok=True)
@@ -435,7 +435,7 @@ def main() -> None:
 
     target_col = f"ret_fwd_{args.horizon}d"
     panel = build_daily_panel(horizon=args.horizon)
-    panel.to_parquet(processed_dir / "daily_tech_panel.parquet", index=False)
+    panel.to_parquet(processed_dir / "daily_alpha_panel.parquet", index=False)
 
     ic, ic_summary = compute_daily_ic(panel, target_col)
     ic.to_csv(output_dir / "daily_ic_timeseries.csv", index=False, encoding="utf-8-sig")
@@ -517,9 +517,9 @@ def main() -> None:
 
     summary = pd.DataFrame(summaries)
     summary.to_csv(output_dir / "performance_summary.csv", index=False, encoding="utf-8-sig")
-    print("\n[daily-tech] performance summary:")
+    print("\n[daily-alpha] performance summary:")
     print(summary.to_string(index=False))
-    print(f"\n[daily-tech] outputs saved to {output_dir}")
+    print(f"\n[daily-alpha] outputs saved to {output_dir}")
 
 
 if __name__ == "__main__":

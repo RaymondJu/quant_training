@@ -1,6 +1,0 @@
-﻿Model,Params,Tuning_End
-LightGBM-tuned,"{""n_estimators"": 300, ""learning_rate"": 0.03596444270828742, ""max_depth"": 5, ""num_leaves"": 15, ""min_child_samples"": 20, ""subsample"": 0.7465447373174767, ""colsample_bytree"": 0.7824279936868144, ""reg_alpha"": 0.8023102291340046, ""reg_lambda"": 0.005477562363971304}",2019-09
-CatBoost-tuned,"{""iterations"": 300, ""learning_rate"": 0.09729870597990298, ""depth"": 3, ""l2_leaf_reg"": 3.2676417657817622, ""random_strength"": 1.184829137724085, ""bagging_temperature"": 0.09290082543999545}",2019-09
-XGBoost-tuned,"{""n_estimators"": 150, ""learning_rate"": 0.0542425537773747, ""max_depth"": 3, ""min_child_weight"": 36.826214072757374, ""subsample"": 0.7035119926400067, ""colsample_bytree"": 0.8650089137415928, ""reg_alpha"": 0.014223612773743576, ""reg_lambda"": 0.08389112347840598}",2019-09
-RandomForest-tuned,"{""n_estimators"": 150, ""max_depth"": 8, ""min_samples_leaf"": 30, ""min_samples_split"": 50, ""max_features"": ""sqrt""}",2019-09
-Ridge-tuned,"{""alpha"": 1.0}",2019-09
