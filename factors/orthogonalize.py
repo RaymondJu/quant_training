@@ -10,21 +10,9 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import OUTPUT_DIR, PROCESSED_DIR
+from config import ACTIVE_FACTOR_COLS, OUTPUT_DIR, PROCESSED_DIR
 
-DEFAULT_FACTOR_COLS = [
-    "EP",
-    "BP",
-    "SP",
-    "MOM_12_1",
-    "REV_1M",
-    "ROE_TTM",
-    "GPM_change",
-    "VOL_20D",
-    "IVOL",
-    "TURN_1M",
-    "AMIHUD",
-]
+DEFAULT_FACTOR_COLS = ACTIVE_FACTOR_COLS
 
 
 @dataclass(frozen=True)

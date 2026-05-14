@@ -21,11 +21,9 @@ from scipy import stats as sp_stats
 import statsmodels.api as sm
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import PROCESSED_DIR, OUTPUT_DIR
+from config import ACTIVE_FACTOR_COLS, PROCESSED_DIR, OUTPUT_DIR
 
-FACTOR_COLS = ["EP", "BP", "SP", "MOM_12_1", "REV_1M", "ROE_TTM",
-               "GPM_change", "VOL_20D", "IVOL", "TURN_1M", "AMIHUD",
-               "SIZE", "BETA_60D", "ABTURN_1M", "OCF_QUALITY", "ASSET_GROWTH"]
+FACTOR_COLS = ACTIVE_FACTOR_COLS
 
 
 def load_factor_panel():

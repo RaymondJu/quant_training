@@ -63,6 +63,7 @@ from config import (
     END_DATE,
     DOWNLOAD_SLEEP,
     MAX_RETRY,
+    UNIVERSE_SPEC,
     get_benchmark_nav_path,
     get_benchmark_qfq_path,
     get_constituents_path,
@@ -86,21 +87,77 @@ def retry_backoff_sleep(retry_num):
 def get_index_stocks():
     """获取当前配置指数的成分股列表"""
     cache_file = get_constituents_path()
+    min_constituents = UNIVERSE_SPEC.get("min_constituents")
     
     if os.path.exists(cache_file):
         df = pd.read_csv(cache_file, dtype=str)
-        print(f"[INFO] 从缓存加载 {INDEX_NAME} 成分股: {len(df)} 只")
-        return df
+        before = len(df)
+        df = _normalize_constituents(df)
+        if len(df) != before:
+            print(f"[WARN] {INDEX_NAME} 成分股缓存存在重复: {before} → {len(df)}")
+        if min_constituents is None or len(df) >= min_constituents:
+            print(f"[INFO] 从缓存加载 {INDEX_NAME} 成分股: {len(df)} 只")
+            return df
+        print(f"[WARN] {INDEX_NAME} 成分股缓存不完整: {len(df)} < {min_constituents}, 将重新下载")
     
     print(f"[INFO] 正在从 AKShare 获取 {INDEX_NAME} 成分股列表...")
-    df = ak.index_stock_cons(symbol=INDEX_CODE)
-    # 统一列名
-    df.columns = ["stock_code", "stock_name", "date"]
-    # 补全6位代码
-    df["stock_code"] = df["stock_code"].astype(str).str.zfill(6)
+    df = _download_index_constituents()
     df.to_csv(cache_file, index=False, encoding="utf-8-sig")
     print(f"[INFO] 获取 {INDEX_NAME} 成分股 {len(df)} 只, 已保存至 {cache_file}")
     return df
+
+
+def _normalize_constituents(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize constituent table to stock_code, stock_name, date."""
+    df = df.copy()
+    rename_map = {
+        "品种代码": "stock_code",
+        "品种名称": "stock_name",
+        "纳入日期": "date",
+        "code": "stock_code",
+        "name": "stock_name",
+    }
+    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+
+    if "stock_code" not in df.columns:
+        raise ValueError(f"{INDEX_NAME} 成分股数据缺少 stock_code 列: {df.columns.tolist()}")
+    if "stock_name" not in df.columns:
+        df["stock_name"] = ""
+    if "date" not in df.columns:
+        df["date"] = pd.Timestamp.today().strftime("%Y-%m-%d")
+
+    df = df[["stock_code", "stock_name", "date"]].copy()
+    df["stock_code"] = df["stock_code"].astype(str).str.extract(r"(\d{6})", expand=False).str.zfill(6)
+    df["stock_name"] = df["stock_name"].astype(str)
+    df["date"] = df["date"].astype(str)
+    df = df.dropna(subset=["stock_code"])
+    return (
+        df.drop_duplicates()
+          .sort_values(["stock_code", "date"])
+          .drop_duplicates("stock_code", keep="last")
+          .reset_index(drop=True)
+    )
+
+
+def _download_index_constituents() -> pd.DataFrame:
+    """Download constituents, falling back when the main AKShare source is incomplete."""
+    min_constituents = UNIVERSE_SPEC.get("min_constituents")
+
+    main = _normalize_constituents(ak.index_stock_cons(symbol=INDEX_CODE))
+    if min_constituents is None or len(main) >= min_constituents:
+        return main
+
+    print(f"[WARN] 主接口仅返回 {len(main)} 只唯一股票, 尝试 Sina 备用接口")
+    try:
+        sina = _normalize_constituents(ak.index_stock_cons_sina(symbol=INDEX_CODE))
+        if len(sina) >= len(main):
+            if min_constituents is None or len(sina) >= min_constituents:
+                print(f"[INFO] Sina 备用接口返回 {len(sina)} 只唯一股票")
+                return sina
+    except Exception as exc:
+        print(f"[WARN] Sina 备用接口失败: {exc}")
+
+    return main
 
 
 def get_hs300_stocks():

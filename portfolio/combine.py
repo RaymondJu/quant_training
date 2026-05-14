@@ -9,26 +9,9 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from config import IC_ROLLING_WINDOW, OUTPUT_DIR, PROCESSED_DIR
+from config import ACTIVE_FACTOR_COLS, IC_ROLLING_WINDOW, OUTPUT_DIR, PROCESSED_DIR
 
-DEFAULT_FACTOR_COLS = [
-    "EP",
-    "BP",
-    "SP",
-    "MOM_12_1",
-    "REV_1M",
-    "ROE_TTM",
-    "GPM_change",
-    "VOL_20D",
-    "IVOL",
-    "TURN_1M",
-    "AMIHUD",
-    "SIZE",
-    "BETA_60D",
-    "ABTURN_1M",
-    "OCF_QUALITY",
-    "ASSET_GROWTH",
-]
+DEFAULT_FACTOR_COLS = ACTIVE_FACTOR_COLS
 
 
 def load_factor_panel(panel_file: str = "factor_panel.parquet") -> pd.DataFrame:

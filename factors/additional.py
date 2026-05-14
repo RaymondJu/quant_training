@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Additional factor families:
+Additional factor families.
+
+Daily/technical factors:
     - SIZE: negative log market cap, higher means smaller size
     - BETA_60D: rolling 60-trading-day market beta
     - ABTURN_1M: abnormal turnover vs prior 12-month average
+
+Fundamental add-ons used only by the full factor set:
     - OCF_QUALITY: operating cash flow / net profit quality proxy
     - ASSET_GROWTH: total asset growth
-
-Usage:
-    python factors/additional.py
 """
 from __future__ import annotations
 
@@ -19,29 +20,28 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import PROCESSED_DIR, RAW_DIR
+from config import ACTIVE_FACTOR_COLS, PROCESSED_DIR
 from factors.utils import compute_monthly_market_cap, load_daily_prices, load_monthly_panel
 
 
 def build_additional_factors() -> pd.DataFrame:
+    active_factors = set(ACTIVE_FACTOR_COLS)
     print("[additional] loading monthly panel...")
     monthly = load_monthly_panel().copy()
     monthly = monthly.sort_values(["stock_code", "year_month"]).reset_index(drop=True)
 
-    # ---- SIZE ----
     print("[additional] computing SIZE...")
     daily = load_daily_prices()
     market_cap = compute_monthly_market_cap(daily)[["stock_code", "year_month", "ln_market_cap"]].copy()
     market_cap["SIZE"] = -market_cap["ln_market_cap"]
 
-    # ---- BETA_60D ----
     print("[additional] computing BETA_60D...")
     daily = daily.sort_values(["stock_code", "date"]).copy()
     daily["daily_ret"] = daily["pct_change"] / 100.0
 
     from data.benchmark import load_benchmark_daily_returns
-    index_df = load_benchmark_daily_returns()  # [date, index_ret]
 
+    index_df = load_benchmark_daily_returns()
     beta_daily = daily.merge(index_df[["date", "index_ret"]], on="date", how="inner")
     beta_daily = beta_daily.dropna(subset=["daily_ret", "index_ret"]).copy()
     beta_daily["year_month"] = beta_daily["date"].dt.to_period("M")
@@ -62,7 +62,6 @@ def build_additional_factors() -> pd.DataFrame:
         .reset_index()
     )
 
-    # ---- ABTURN_1M ----
     print("[additional] computing ABTURN_1M...")
     monthly["turnover_mean_12m"] = (
         monthly.groupby("stock_code")["avg_turnover_rate"]
@@ -70,24 +69,31 @@ def build_additional_factors() -> pd.DataFrame:
     )
     monthly["ABTURN_1M"] = monthly["avg_turnover_rate"] - monthly["turnover_mean_12m"]
 
-    # ---- OCF_QUALITY / ASSET_GROWTH ----
-    print("[additional] reading financial quality columns from monthly panel...")
-    monthly["OCF_QUALITY"] = monthly["经营现金净流量与净利润的比率(%)"] / 100.0
-    monthly["ASSET_GROWTH"] = monthly["总资产增长率(%)"] / 100.0
+    result_cols = ["stock_code", "year_month", "ABTURN_1M"]
+    if "OCF_QUALITY" in active_factors or "ASSET_GROWTH" in active_factors:
+        print("[additional] reading financial quality columns from monthly panel...")
+        if "OCF_QUALITY" in active_factors:
+            monthly["OCF_QUALITY"] = monthly["经营现金净流量与净利润的比率(%)"] / 100.0
+            result_cols.append("OCF_QUALITY")
+        if "ASSET_GROWTH" in active_factors:
+            monthly["ASSET_GROWTH"] = monthly["总资产增长率(%)"] / 100.0
+            result_cols.append("ASSET_GROWTH")
+    else:
+        print("[additional] skipping financial quality factors for technical-only factor set")
 
-    result = monthly[["stock_code", "year_month", "ABTURN_1M", "OCF_QUALITY", "ASSET_GROWTH"]].copy()
+    result = monthly[result_cols].copy()
     result = result.merge(
         market_cap[["stock_code", "year_month", "SIZE"]],
         on=["stock_code", "year_month"],
         how="left",
     )
-    result = result.merge(
-        beta_monthly,
-        on=["stock_code", "year_month"],
-        how="left",
-    )
+    result = result.merge(beta_monthly, on=["stock_code", "year_month"], how="left")
 
-    output_cols = ["stock_code", "year_month", "SIZE", "BETA_60D", "ABTURN_1M", "OCF_QUALITY", "ASSET_GROWTH"]
+    output_cols = [
+        "stock_code",
+        "year_month",
+        *[c for c in ["SIZE", "BETA_60D", "ABTURN_1M", "OCF_QUALITY", "ASSET_GROWTH"] if c in active_factors],
+    ]
     output = result[output_cols]
 
     print(f"[additional] done: {len(output)} rows")

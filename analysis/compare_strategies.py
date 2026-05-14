@@ -3,7 +3,7 @@
 多策略汇总对比
 
 将 equal / ic / icir（线性多因子）和 lgbm（机器学习）四条策略
-与沪深300基准放在同一张图和统一绩效表中。
+与当前配置指数基准放在同一张图和统一绩效表中。
 
 输出（output/analysis/）：
   strategy_comparison.png  → 五条净值曲线

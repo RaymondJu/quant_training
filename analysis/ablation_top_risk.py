@@ -12,7 +12,7 @@ Ablation 实验：顶部风险过滤层效果对比
 
 输出文件（output/ablation/）:
   performance_comparison.csv  — 绩效汇总（含 Calmar）
-  nav_comparison.png          — 6条NAV + CSI300
+  nav_comparison.png          — 6条NAV + benchmark
   drawdown_comparison.png     — 回撤曲线 + 2018/2022/2024标注
   excluded_stocks_log.csv     — 每月被剔除股票记录
   sensitivity.png             — Sharpe/Calmar 对剔除比例的敏感性
@@ -35,7 +35,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
-    OUTPUT_DIR, PROCESSED_DIR, RAW_DIR,
+    INDEX_NAME, OUTPUT_DIR, PROCESSED_DIR, RAW_DIR,
     TOP_N_STOCKS, TRANSACTION_COST, TOP_RISK_FILTER_PCT,
 )
 from ml.model_comparison import backtest_from_scores, load_benchmark_returns
@@ -222,7 +222,7 @@ def plot_nav_comparison(all_rets: dict[str, pd.Series], benchmark: pd.Series):
     bm = benchmark[(benchmark.index >= ABLATION_START) & (benchmark.index <= ABLATION_END)]
     bm_nav = (1 + bm.fillna(0)).cumprod()
     ax.plot([p.to_timestamp() for p in bm_nav.index], bm_nav.values,
-            color="gray", lw=1.4, ls=":", label="CSI300")
+            color="gray", lw=1.4, ls=":", label=INDEX_NAME)
 
     for name, rets in all_rets.items():
         dates, nav = _to_nav(rets, ABLATION_START, ABLATION_END)
@@ -258,7 +258,7 @@ def plot_drawdown_comparison(all_rets: dict[str, pd.Series], benchmark: pd.Serie
     bm_peak = bm_nav.cummax()
     bm_dd = bm_nav / bm_peak - 1
     ax.fill_between([p.to_timestamp() for p in bm_dd.index], bm_dd.values, 0,
-                    color="gray", alpha=0.15, label="CSI300")
+                    color="gray", alpha=0.15, label=INDEX_NAME)
 
     for name, rets in all_rets.items():
         dates, dd = _to_drawdown(rets, ABLATION_START, ABLATION_END)
@@ -370,7 +370,7 @@ def main():
     os.makedirs(SAVE_DIR, exist_ok=True)
     print(f"[ablation] 统一实验窗口: {ABLATION_START} ~ {ABLATION_END} (98个月)")
     print(f"[ablation] 风控剔除比例: {TOP_RISK_FILTER_PCT:.0%}")
-    print("[ablation] 注: 已知幸存者偏差（静态CSI300成分股），此处不修复")
+    print(f"[ablation] 注: 已知幸存者偏差（静态{INDEX_NAME}成分股），此处不修复")
 
     risk_panel  = load_risk_panel()
     factor_panel = load_factor_panel()

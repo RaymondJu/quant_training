@@ -28,16 +28,12 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import LGBM_TRAIN_WINDOW, OUTPUT_DIR, PROCESSED_DIR
+from config import ACTIVE_FACTOR_COLS, LGBM_TRAIN_WINDOW, OUTPUT_DIR, PROCESSED_DIR
 
 plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
 
-FACTOR_COLS = [
-    "EP", "BP", "SP", "MOM_12_1", "REV_1M", "ROE_TTM",
-    "GPM_change", "VOL_20D", "IVOL", "TURN_1M", "AMIHUD",
-    "SIZE", "BETA_60D", "ABTURN_1M", "OCF_QUALITY", "ASSET_GROWTH",
-]
+FACTOR_COLS = ACTIVE_FACTOR_COLS
 VAL_WINDOW = 3          # validation months for early stopping
 EARLY_STOPPING = 30
 IMPORTANCE_LAST_N = 12  # average feature importance over last N months

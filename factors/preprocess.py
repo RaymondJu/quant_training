@@ -21,11 +21,9 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from factors.utils import load_monthly_panel, load_daily_prices, compute_monthly_market_cap
-from config import PROCESSED_DIR, MAD_MULTIPLIER
+from config import ACTIVE_FACTOR_COLS, FACTOR_FILE_MAP, FACTOR_SET_LABEL, PROCESSED_DIR, MAD_MULTIPLIER
 
-FACTOR_COLS = ["EP", "BP", "SP", "MOM_12_1", "REV_1M", "ROE_TTM",
-               "GPM_change", "VOL_20D", "IVOL", "TURN_1M", "AMIHUD",
-               "SIZE", "BETA_60D", "ABTURN_1M", "OCF_QUALITY", "ASSET_GROWTH"]
+FACTOR_COLS = ACTIVE_FACTOR_COLS
 
 
 def load_all_factors():
@@ -34,16 +32,11 @@ def load_all_factors():
     base_cols = ["stock_code", "year_month", "ret_next_month", "industry"]
     base = panel[base_cols].copy()
 
-    factor_files = {
-        "factor_value.parquet": ["EP", "BP", "SP"],
-        "factor_momentum.parquet": ["MOM_12_1", "REV_1M"],
-        "factor_quality.parquet": ["ROE_TTM", "GPM_change"],
-        "factor_volatility.parquet": ["VOL_20D", "IVOL"],
-        "factor_liquidity.parquet": ["TURN_1M", "AMIHUD"],
-        "factor_additional.parquet": ["SIZE", "BETA_60D", "ABTURN_1M", "OCF_QUALITY", "ASSET_GROWTH"],
-    }
-
-    for fname, cols in factor_files.items():
+    active_set = set(ACTIVE_FACTOR_COLS)
+    for fname, cols in FACTOR_FILE_MAP.items():
+        cols = [c for c in cols if c in active_set]
+        if not cols:
+            continue
         path = os.path.join(PROCESSED_DIR, fname)
         if not os.path.exists(path):
             print(f"[WARN] 未找到 {fname}, 跳过")

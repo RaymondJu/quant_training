@@ -36,18 +36,23 @@ from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import INDEX_NAME, LGBM_TRAIN_WINDOW, OUTPUT_DIR, PROCESSED_DIR, TOP_N_STOCKS, TRANSACTION_COST
+from config import (
+    ACTIVE_FACTOR_COLS,
+    FACTOR_SET_LABEL,
+    INDEX_NAME,
+    LGBM_TRAIN_WINDOW,
+    OUTPUT_DIR,
+    PROCESSED_DIR,
+    TOP_N_STOCKS,
+    TRANSACTION_COST,
+)
 from portfolio.performance import summarize_returns
 
 plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
 warnings.filterwarnings("ignore", message=".*force_all_finite.*", category=FutureWarning)
 
-FACTOR_COLS = [
-    "EP", "BP", "SP", "MOM_12_1", "REV_1M", "ROE_TTM",
-    "GPM_change", "VOL_20D", "IVOL", "TURN_1M", "AMIHUD",
-    "SIZE", "BETA_60D", "ABTURN_1M", "OCF_QUALITY", "ASSET_GROWTH",
-]
+FACTOR_COLS = ACTIVE_FACTOR_COLS
 VAL_WINDOW = 3
 IMPORTANCE_LAST_N = 12
 
@@ -427,7 +432,7 @@ def main():
     save_dir = os.path.join(OUTPUT_DIR, "ml")
     os.makedirs(save_dir, exist_ok=True)
 
-    print("[model_comparison] 加载数据...")
+    print(f"[model_comparison] 加载数据... factor_set={FACTOR_SET_LABEL}")
     panel = load_factor_panel()
     benchmark = load_benchmark_returns()
     features = [c for c in FACTOR_COLS if c in panel.columns]

@@ -33,6 +33,7 @@ UNIVERSE_SPECS = {
         "index_name": "中证500",
         "index_symbol": "sh000905",
         "benchmark_etf": "510500",
+        "min_constituents": 500,
         "constituents_filename": "index_constituents.csv",
         "index_daily_filename": "index_daily.parquet",
         "total_return_filename": "index_total_return.parquet",
@@ -54,6 +55,78 @@ BENCHMARK_ETF = UNIVERSE_SPEC["benchmark_etf"]
 BENCHMARK_NAME = f"{INDEX_NAME} / {BENCHMARK_ETF} NAV Benchmark"
 
 
+# ==================== Factor Set Config ====================
+FULL_FACTOR_COLS = [
+    "EP",
+    "BP",
+    "SP",
+    "MOM_12_1",
+    "REV_1M",
+    "ROE_TTM",
+    "GPM_change",
+    "VOL_20D",
+    "IVOL",
+    "TURN_1M",
+    "AMIHUD",
+    "SIZE",
+    "BETA_60D",
+    "ABTURN_1M",
+    "OCF_QUALITY",
+    "ASSET_GROWTH",
+]
+
+TECHNICAL_FACTOR_COLS = [
+    "MOM_12_1",
+    "REV_1M",
+    "VOL_20D",
+    "IVOL",
+    "TURN_1M",
+    "AMIHUD",
+    "SIZE",
+    "BETA_60D",
+    "ABTURN_1M",
+]
+
+FACTOR_SET_SPECS = {
+    "full": {
+        "label": "full",
+        "output_suffix": "",
+        "factor_cols": FULL_FACTOR_COLS,
+    },
+    "technical": {
+        "label": "technical_only",
+        "output_suffix": "technical_only",
+        "factor_cols": TECHNICAL_FACTOR_COLS,
+    },
+}
+
+FACTOR_SET_ID = os.environ.get("QT_FACTOR_SET", "full").strip().lower()
+if FACTOR_SET_ID not in FACTOR_SET_SPECS:
+    raise ValueError(
+        f"Unsupported QT_FACTOR_SET={FACTOR_SET_ID!r}. "
+        f"Expected one of: {sorted(FACTOR_SET_SPECS)}"
+    )
+
+FACTOR_SET_SPEC = FACTOR_SET_SPECS[FACTOR_SET_ID]
+FACTOR_SET_LABEL = FACTOR_SET_SPEC["label"]
+ACTIVE_FACTOR_COLS = FACTOR_SET_SPEC["factor_cols"]
+
+FACTOR_FILE_MAP = {
+    "factor_value.parquet": ["EP", "BP", "SP"],
+    "factor_momentum.parquet": ["MOM_12_1", "REV_1M"],
+    "factor_quality.parquet": ["ROE_TTM", "GPM_change"],
+    "factor_volatility.parquet": ["VOL_20D", "IVOL"],
+    "factor_liquidity.parquet": ["TURN_1M", "AMIHUD"],
+    "factor_additional.parquet": [
+        "SIZE",
+        "BETA_60D",
+        "ABTURN_1M",
+        "OCF_QUALITY",
+        "ASSET_GROWTH",
+    ],
+}
+
+
 def _scope_dir(base_dir: str, universe_id: str | None = None) -> str:
     """
     Keep CSI300 on legacy root paths; isolate other universes under subfolders.
@@ -66,12 +139,17 @@ def get_raw_dir(universe_id: str | None = None) -> str:
     return _scope_dir(BASE_RAW_DIR, universe_id)
 
 
+def _factor_set_dir(base_dir: str) -> str:
+    suffix = FACTOR_SET_SPEC["output_suffix"]
+    return os.path.join(base_dir, suffix) if suffix else base_dir
+
+
 def get_processed_dir(universe_id: str | None = None) -> str:
-    return _scope_dir(BASE_PROCESSED_DIR, universe_id)
+    return _factor_set_dir(_scope_dir(BASE_PROCESSED_DIR, universe_id))
 
 
 def get_output_dir(universe_id: str | None = None) -> str:
-    return _scope_dir(BASE_OUTPUT_DIR, universe_id)
+    return _factor_set_dir(_scope_dir(BASE_OUTPUT_DIR, universe_id))
 
 
 def get_constituents_path(universe_id: str | None = None) -> str:
@@ -155,5 +233,5 @@ TOP_RISK_WINDOWS = {
 
 
 # ==================== Download Config ====================
-DOWNLOAD_SLEEP = 2.0
+DOWNLOAD_SLEEP = float(os.environ.get("QT_DOWNLOAD_SLEEP", "2.0"))
 MAX_RETRY = 5
