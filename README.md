@@ -1,6 +1,6 @@
 # CSI500 日频价量 Alpha 研究
 
-> 基于静态中证 500 股票池的日频价量 Alpha 研究流程，覆盖日频特征构造、Rank IC 检验、IC 加权组合、Ridge / LightGBM walk-forward 横向比较、市值中性化和交易成本敏感性分析。
+> 基于静态中证 500 股票池的日频价量 Alpha 研究流程，覆盖日频特征构造、Rank IC 检验、IC 加权组合、Ridge / LightGBM / Optuna-tuned LightGBM walk-forward 横向比较、市值中性化和交易成本敏感性分析。
 
 本分支只展示 `csi500-daily-alpha` 实验结果。旧版月频图表和结果文件已从本分支的 Git 追踪中移除，避免混淆。
 
@@ -44,6 +44,7 @@
 | Ridge | 36.47% | 27.22% | 1.340 | -30.93% | 58.5% | 383 | 35.6% | 32.85% | 2.618 |
 | Ridge size-neutral | 26.87% | 26.41% | 1.017 | -33.17% | 55.9% | 383 | 44.2% | 23.34% | 1.939 |
 | LightGBM | 40.71% | 30.64% | 1.328 | -28.45% | 57.7% | 383 | 58.0% | 37.91% | 2.641 |
+| LightGBM Optuna | 41.72% | 28.89% | 1.444 | -22.84% | 58.5% | 383 | 61.0% | 38.55% | 3.015 |
 
 结果文件：
 
@@ -52,6 +53,8 @@
 - `output/csi500/daily_alpha/cost_sensitivity.csv`
 - `output/csi500/daily_alpha/ridge_returns.csv`
 - `output/csi500/daily_alpha/lightgbm_returns.csv`
+- `output/csi500/daily_alpha/lightgbm_optuna_returns.csv`
+- `output/csi500/daily_alpha/lightgbm_optuna_params.csv`
 
 大文件 `data/processed/csi500/daily_alpha/daily_alpha_panel.parquet` 未上传到 GitHub，需要本地运行脚本重新生成。
 
@@ -65,6 +68,7 @@
 | Ridge | 36.47% | 29.34% | 20.40% | 成本鲁棒性较好 |
 | Ridge size-neutral | 26.87% | 18.68% | 8.56% | 中性化后仍有 alpha，但成本压力更明显 |
 | LightGBM | 40.71% | 28.95% | 14.77% | 毛收益高，但换手最高，成本上升后优势收窄 |
+| LightGBM Optuna | 41.72% | 29.31% | 14.39% | 调参后风险收益改善，但换手进一步上升 |
 
 30 bps 偏乐观，60 bps 更接近中性假设，100 bps 是压力测试。由于 CSI500 中盘股流动性并不总是充裕，不能只看 30 bps 结果。
 
@@ -76,7 +80,7 @@
 
 ```powershell
 $env:QT_UNIVERSE = "csi500"
-python csi500_daily_alpha_pipeline.py --horizon 5 --top-n 50 --run-lightgbm
+python csi500_daily_alpha_pipeline.py --horizon 5 --top-n 50 --run-lightgbm --run-lightgbm-optuna
 ```
 
 或使用脚本：
@@ -114,4 +118,5 @@ quant_training/
 1. 中证 500 日频价量特征中，`AMIHUD_20D` 和 `SIZE` 的 Rank IC 为正，短中期动量、波动率、换手率类因子多为负 IC，说明该样本中更偏向非流动性、小市值、低波低换手和短期反转逻辑。
 2. Ridge 的原始表现较强，但市值中性化后年化从 36.47% 降到 26.87%，说明收益中存在明显小市值暴露。
 3. LightGBM 毛收益最高，但平均换手约 58%，对交易成本更敏感。
-4. 若用于面试展示，建议同时展示原始版本、市值中性版本和成本敏感性，避免只展示最乐观口径。
+4. Optuna-tuned LightGBM 使用 walk-forward 内部验证集调参，每 25 个调仓期重新调参一次，每次 20 个 TPE trial；调参后 Sharpe 和回撤改善，但换手升至约 61%，因此仍需结合成本敏感性判断。
+5. 若用于面试展示，建议同时展示原始版本、市值中性版本、调参版本和成本敏感性，避免只展示最乐观口径。
