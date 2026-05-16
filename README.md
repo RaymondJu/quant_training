@@ -1,6 +1,6 @@
 # CSI500 日频价量 Alpha 研究
 
-> 基于静态中证 500 股票池的日频价量 Alpha 研究流程，覆盖日频特征构造、Rank IC 检验、IC 加权组合、Ridge / LightGBM / Optuna-tuned LightGBM walk-forward 横向比较、市值中性化和交易成本敏感性分析。
+> 基于静态中证 500 股票池的日频价量 Alpha 研究流程，覆盖日频特征构造、Rank IC 检验、IC 加权组合、Ridge / RidgeCV / LightGBM / XGBoost / CatBoost / RandomForest 及 Optuna 调参版本的 walk-forward 横向比较、市值中性化和交易成本敏感性分析。
 
 本分支只展示 `csi500-daily-alpha` 实验结果。旧版月频图表和结果文件已从本分支的 Git 追踪中移除，避免混淆。
 
@@ -31,7 +31,7 @@
 | 偏离度 | `BIAS_20` |
 | 风险 / 规模 | `SIZE`, `BETA_60D` |
 
-所有特征在每日横截面上做缩尾和标准化。模型训练和组合构建都只使用历史已知数据，避免 look-ahead。
+所有特征在每日横截面上做缩尾和标准化。模型训练、调参和组合构建都只使用历史已知数据，避免 look-ahead。
 
 ---
 
@@ -43,18 +43,23 @@
 | IC-weight size-neutral | 13.75% | 19.87% | 0.692 | -31.42% | 56.6% | 472 | 34.8% | 10.95% | 1.082 |
 | Ridge | 36.47% | 27.22% | 1.340 | -30.93% | 58.5% | 383 | 35.6% | 32.85% | 2.618 |
 | Ridge size-neutral | 26.87% | 26.41% | 1.017 | -33.17% | 55.9% | 383 | 44.2% | 23.34% | 1.939 |
-| LightGBM | 40.71% | 30.64% | 1.328 | -28.45% | 57.7% | 383 | 58.0% | 37.91% | 2.641 |
-| LightGBM Optuna | 41.72% | 28.89% | 1.444 | -22.84% | 58.5% | 383 | 61.0% | 38.55% | 3.015 |
+| RidgeCV | 36.60% | 27.23% | 1.344 | -30.93% | 58.5% | 383 | 35.6% | 32.98% | 2.623 |
+| LightGBM | 34.66% | 29.26% | 1.184 | -29.97% | 56.9% | 383 | 59.0% | 31.65% | 2.334 |
+| XGBoost | 42.04% | 30.27% | 1.389 | -26.17% | 56.9% | 383 | 58.3% | 39.08% | 2.736 |
+| CatBoost | 42.80% | 29.95% | 1.429 | -28.94% | 57.7% | 383 | 54.3% | 39.74% | 2.776 |
+| RandomForest | 34.71% | 30.11% | 1.153 | -30.69% | 57.4% | 383 | 52.3% | 31.80% | 2.171 |
+| LightGBM Optuna | 38.79% | 28.42% | 1.365 | -26.91% | 57.2% | 383 | 62.3% | 35.59% | 2.863 |
+| XGBoost Optuna | 46.68% | 29.43% | 1.586 | -26.18% | 56.7% | 383 | 60.2% | 43.45% | 3.212 |
+| CatBoost Optuna | 45.46% | 28.78% | 1.580 | -26.24% | 58.2% | 383 | 55.5% | 42.08% | 3.149 |
+| RandomForest Optuna | 39.46% | 29.02% | 1.360 | -29.99% | 55.4% | 383 | 53.6% | 36.34% | 2.750 |
 
 结果文件：
 
 - `output/csi500/daily_alpha/performance_summary.csv`
 - `output/csi500/daily_alpha/daily_ic_summary.csv`
 - `output/csi500/daily_alpha/cost_sensitivity.csv`
-- `output/csi500/daily_alpha/ridge_returns.csv`
-- `output/csi500/daily_alpha/lightgbm_returns.csv`
-- `output/csi500/daily_alpha/lightgbm_optuna_returns.csv`
-- `output/csi500/daily_alpha/lightgbm_optuna_params.csv`
+- `output/csi500/daily_alpha/*_returns.csv`
+- `output/csi500/daily_alpha/*_optuna_params.csv`
 
 大文件 `data/processed/csi500/daily_alpha/daily_alpha_panel.parquet` 未上传到 GitHub，需要本地运行脚本重新生成。
 
@@ -64,13 +69,25 @@
 
 | 策略 | 30 bps 年化 | 60 bps 年化 | 100 bps 年化 | 结论 |
 |---|---:|---:|---:|---|
-| IC-weight | 15.05% | 9.27% | 1.99% | 成本敏感，换手成本上升后吸引力明显下降 |
-| Ridge | 36.47% | 29.34% | 20.40% | 成本鲁棒性较好 |
-| Ridge size-neutral | 26.87% | 18.68% | 8.56% | 中性化后仍有 alpha，但成本压力更明显 |
-| LightGBM | 40.71% | 28.95% | 14.77% | 毛收益高，但换手最高，成本上升后优势收窄 |
-| LightGBM Optuna | 41.72% | 29.31% | 14.39% | 调参后风险收益改善，但换手进一步上升 |
+| RidgeCV | 36.60% | 29.45% | 20.48% | 线性模型中最稳健，调参效果接近 Ridge |
+| XGBoost Optuna | 46.68% | 34.01% | 18.77% | 当前综合表现最强，但仍受换手成本影响 |
+| CatBoost Optuna | 45.46% | 33.83% | 19.74% | 风险收益接近 XGBoost Optuna，换手略低 |
+| RandomForest Optuna | 39.46% | 28.67% | 15.55% | 调参后改善明显，但成本压力仍存在 |
+| LightGBM Optuna | 38.79% | 26.37% | 11.49% | 调参后优于默认版，但换手偏高 |
+| IC-weight | 15.05% | 9.27% | 1.99% | 成本敏感，作为传统 baseline 更合适 |
 
 30 bps 偏乐观，60 bps 更接近中性假设，100 bps 是压力测试。由于 CSI500 中盘股流动性并不总是充裕，不能只看 30 bps 结果。
+
+---
+
+## 调参设计
+
+- 调参方法：Optuna TPE sampler，不使用网格穷举。
+- 验证方式：walk-forward 内部验证，只使用当前调仓日前的历史数据。
+- 验证集：训练窗口最后 63 个交易日。
+- 重调频率：每 25 个调仓期重新调参。
+- 每次 trial 数：12。
+- 训练抽样：树模型默认最多 50,000 行；RandomForest 单独限制为 15,000 行，避免日频滚动训练过慢。
 
 ---
 
@@ -80,7 +97,7 @@
 
 ```powershell
 $env:QT_UNIVERSE = "csi500"
-python csi500_daily_alpha_pipeline.py --horizon 5 --top-n 50 --run-lightgbm --run-lightgbm-optuna
+python csi500_daily_alpha_pipeline.py --horizon 5 --top-n 50 --run-all-ml --run-all-ml-optuna --optuna-trials 12 --optuna-val-days 63 --optuna-retune-every 25 --lgbm-max-train-rows 50000
 ```
 
 或使用脚本：
@@ -117,6 +134,6 @@ quant_training/
 
 1. 中证 500 日频价量特征中，`AMIHUD_20D` 和 `SIZE` 的 Rank IC 为正，短中期动量、波动率、换手率类因子多为负 IC，说明该样本中更偏向非流动性、小市值、低波低换手和短期反转逻辑。
 2. Ridge 的原始表现较强，但市值中性化后年化从 36.47% 降到 26.87%，说明收益中存在明显小市值暴露。
-3. LightGBM 毛收益最高，但平均换手约 58%，对交易成本更敏感。
-4. Optuna-tuned LightGBM 使用 walk-forward 内部验证集调参，每 25 个调仓期重新调参一次，每次 20 个 TPE trial；调参后 Sharpe 和回撤改善，但换手升至约 61%，因此仍需结合成本敏感性判断。
-5. 若用于面试展示，建议同时展示原始版本、市值中性版本、调参版本和成本敏感性，避免只展示最乐观口径。
+3. 在非线性模型中，Optuna 调参后的 XGBoost 和 CatBoost 表现最好，Sharpe 分别为 1.586 和 1.580。
+4. 调参能改善树模型的风险收益，但也需要结合换手和成本敏感性判断；100 bps 压力测试下，收益显著收缩。
+5. 若用于面试展示，建议同时展示传统 IC baseline、线性模型、树模型默认版、Optuna 调参版、市值中性版本和成本敏感性，避免只展示最乐观口径。

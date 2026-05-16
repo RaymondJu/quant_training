@@ -18,8 +18,11 @@ import numpy as np
 import optuna
 import pandas as pd
 import lightgbm as lgb
-from sklearn.linear_model import Ridge
+from catboost import CatBoostRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import Ridge, RidgeCV
 from sklearn.preprocessing import StandardScaler
+from xgboost import XGBRegressor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import BASE_OUTPUT_DIR, BASE_PROCESSED_DIR, TRANSACTION_COST, UNIVERSE_ID
@@ -61,6 +64,43 @@ LIGHTGBM_BASE_PARAMS = {
     "random_state": 42,
     "n_jobs": -1,
     "verbose": -1,
+}
+
+XGBOOST_BASE_PARAMS = {
+    "objective": "reg:squarederror",
+    "n_estimators": 120,
+    "learning_rate": 0.05,
+    "max_depth": 3,
+    "min_child_weight": 30,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "reg_alpha": 0.1,
+    "reg_lambda": 1.0,
+    "random_state": 42,
+    "n_jobs": -1,
+    "tree_method": "hist",
+    "eval_metric": "rmse",
+    "verbosity": 0,
+}
+
+CATBOOST_BASE_PARAMS = {
+    "loss_function": "RMSE",
+    "iterations": 120,
+    "learning_rate": 0.05,
+    "depth": 4,
+    "l2_leaf_reg": 3.0,
+    "random_seed": 42,
+    "thread_count": -1,
+    "verbose": False,
+}
+
+RANDOM_FOREST_BASE_PARAMS = {
+    "n_estimators": 80,
+    "max_depth": 5,
+    "min_samples_leaf": 50,
+    "max_features": 0.6,
+    "random_state": 42,
+    "n_jobs": -1,
 }
 
 
@@ -225,6 +265,35 @@ def _mean_daily_rank_ic(frame: pd.DataFrame, score_col: str, target_col: str) ->
     return float(np.mean(values)) if values else -1.0
 
 
+def _make_model(model_name: str, params: dict):
+    if model_name == "LightGBM":
+        return lgb.LGBMRegressor(**params)
+    if model_name == "XGBoost":
+        return XGBRegressor(**params)
+    if model_name == "CatBoost":
+        return CatBoostRegressor(**params)
+    if model_name == "RandomForest":
+        return RandomForestRegressor(**params)
+    raise ValueError(f"Unsupported model_name={model_name}")
+
+
+def _base_params_for(model_name: str) -> dict:
+    if model_name == "LightGBM":
+        return LIGHTGBM_BASE_PARAMS.copy()
+    if model_name == "XGBoost":
+        return XGBOOST_BASE_PARAMS.copy()
+    if model_name == "CatBoost":
+        return CATBOOST_BASE_PARAMS.copy()
+    if model_name == "RandomForest":
+        return RANDOM_FOREST_BASE_PARAMS.copy()
+    raise ValueError(f"Unsupported model_name={model_name}")
+
+
+def _model_max_train_rows(model_name: str, max_train_rows: int) -> int:
+    # RandomForest is much slower than histogram GBDT on rolling daily panels.
+    return min(max_train_rows, 15_000) if model_name == "RandomForest" else max_train_rows
+
+
 def backtest_ic_weight(
     panel: pd.DataFrame,
     ic: pd.DataFrame,
@@ -326,6 +395,64 @@ def backtest_ridge(
     return pd.DataFrame(returns)
 
 
+def backtest_ridge_cv(
+    panel: pd.DataFrame,
+    target_col: str,
+    horizon: int,
+    top_n: int,
+    train_days: int,
+    start_days: int,
+    cost_bps: float,
+    size_neutral_score: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    print("[daily-alpha] backtesting RidgeCV walk-forward...")
+    dates = sorted(panel["date"].unique())
+    rebalance_dates = _make_rebalance_dates(dates, warmup_days=start_days, step=horizon)
+    alphas = [0.01, 0.1, 1.0, 10.0, 100.0]
+
+    prev_holdings: set[str] = set()
+    returns = []
+    param_rows = []
+    for i, date in enumerate(rebalance_dates, start=1):
+        date_pos = dates.index(date)
+        train_dates = dates[max(0, date_pos - train_days):date_pos]
+        train = panel[panel["date"].isin(train_dates)].dropna(subset=[target_col])
+        pred = panel[panel["date"] == date].copy()
+        if len(train) < 1000 or pred.empty:
+            continue
+
+        scaler = StandardScaler()
+        x_train = scaler.fit_transform(train[FEATURE_COLS])
+        y_train = train[target_col].values
+        x_pred = scaler.transform(pred[FEATURE_COLS])
+
+        model = RidgeCV(alphas=alphas, fit_intercept=True)
+        model.fit(x_train, y_train)
+        pred["score"] = model.predict(x_pred)
+        if size_neutral_score:
+            pred["score"] = _neutralize_score_by_size(pred)
+        selected = pred.nlargest(top_n, "score")
+        holdings = set(selected["stock_code"])
+        turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
+        gross_ret = selected[target_col].mean()
+        net_ret = gross_ret - (cost_bps / 10_000.0) * turnover
+        returns.append(
+            {
+                "date": date,
+                "strategy_ret": net_ret,
+                "gross_ret": gross_ret,
+                "turnover": turnover,
+                "n_holdings": len(selected),
+            }
+        )
+        param_rows.append({"date": date, "alpha": float(model.alpha_)})
+        prev_holdings = holdings
+        if i % 50 == 0:
+            print(f"  ridgecv progress: {i}/{len(rebalance_dates)} rebalances")
+
+    return pd.DataFrame(returns), pd.DataFrame(param_rows)
+
+
 def backtest_lightgbm(
     panel: pd.DataFrame,
     target_col: str,
@@ -375,6 +502,62 @@ def backtest_lightgbm(
         prev_holdings = holdings
         if i % 50 == 0:
             print(f"  lightgbm progress: {i}/{len(rebalance_dates)} rebalances")
+
+    return pd.DataFrame(returns)
+
+
+def backtest_model(
+    model_name: str,
+    panel: pd.DataFrame,
+    target_col: str,
+    horizon: int,
+    top_n: int,
+    train_days: int,
+    start_days: int,
+    cost_bps: float,
+    max_train_rows: int = 60_000,
+    size_neutral_score: bool = False,
+    params: dict | None = None,
+) -> pd.DataFrame:
+    print(f"[daily-alpha] backtesting {model_name} walk-forward...")
+    dates = sorted(panel["date"].unique())
+    rebalance_dates = _make_rebalance_dates(dates, warmup_days=start_days, step=horizon)
+    model_params = _base_params_for(model_name) if params is None else params.copy()
+
+    prev_holdings: set[str] = set()
+    returns = []
+    rng = np.random.default_rng(42)
+    for i, date in enumerate(rebalance_dates, start=1):
+        date_pos = dates.index(date)
+        train_dates = dates[max(0, date_pos - train_days):date_pos]
+        train = panel[panel["date"].isin(train_dates)].dropna(subset=[target_col])
+        pred = panel[panel["date"] == date].copy()
+        if len(train) < 1000 or pred.empty:
+            continue
+        train = _sample_train_rows(train, max_train_rows, rng)
+
+        model = _make_model(model_name, model_params)
+        model.fit(train[FEATURE_COLS], train[target_col])
+        pred["score"] = model.predict(pred[FEATURE_COLS])
+        if size_neutral_score:
+            pred["score"] = _neutralize_score_by_size(pred)
+        selected = pred.nlargest(top_n, "score")
+        holdings = set(selected["stock_code"])
+        turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
+        gross_ret = selected[target_col].mean()
+        net_ret = gross_ret - (cost_bps / 10_000.0) * turnover
+        returns.append(
+            {
+                "date": date,
+                "strategy_ret": net_ret,
+                "gross_ret": gross_ret,
+                "turnover": turnover,
+                "n_holdings": len(selected),
+            }
+        )
+        prev_holdings = holdings
+        if i % 50 == 0:
+            print(f"  {model_name.lower()} progress: {i}/{len(rebalance_dates)} rebalances")
 
     return pd.DataFrame(returns)
 
@@ -429,6 +612,119 @@ def tune_lightgbm_params(
     tuned_params = LIGHTGBM_BASE_PARAMS.copy()
     tuned_params.update(study.best_params)
     tuned_params["random_state"] = seed
+    meta = {
+        "best_score": study.best_value,
+        "n_trials": n_trials,
+        "train_rows": len(fit_frame),
+        "val_rows": len(val_frame),
+        "val_start": val_dates[0],
+        "val_end": val_dates[-1],
+    }
+    return tuned_params, meta
+
+
+def _suggest_params(model_name: str, trial: optuna.Trial, seed: int) -> dict:
+    if model_name == "LightGBM":
+        return {
+            "objective": "regression",
+            "n_estimators": trial.suggest_int("n_estimators", 60, 240),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.12, log=True),
+            "max_depth": trial.suggest_int("max_depth", 2, 5),
+            "num_leaves": trial.suggest_int("num_leaves", 7, 31),
+            "min_child_samples": trial.suggest_int("min_child_samples", 20, 160),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-3, 10.0, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-2, 30.0, log=True),
+            "random_state": seed,
+            "n_jobs": -1,
+            "verbose": -1,
+        }
+    if model_name == "XGBoost":
+        return {
+            "objective": "reg:squarederror",
+            "n_estimators": trial.suggest_int("n_estimators", 60, 240),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.12, log=True),
+            "max_depth": trial.suggest_int("max_depth", 2, 5),
+            "min_child_weight": trial.suggest_int("min_child_weight", 10, 120),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-3, 10.0, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-2, 30.0, log=True),
+            "random_state": seed,
+            "n_jobs": -1,
+            "tree_method": "hist",
+            "eval_metric": "rmse",
+            "verbosity": 0,
+        }
+    if model_name == "CatBoost":
+        return {
+            "loss_function": "RMSE",
+            "iterations": trial.suggest_int("iterations", 60, 220),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.12, log=True),
+            "depth": trial.suggest_int("depth", 3, 6),
+            "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1.0, 20.0, log=True),
+            "random_seed": seed,
+            "thread_count": -1,
+            "verbose": False,
+        }
+    if model_name == "RandomForest":
+        return {
+            "n_estimators": trial.suggest_int("n_estimators", 40, 120),
+            "max_depth": trial.suggest_int("max_depth", 3, 7),
+            "min_samples_leaf": trial.suggest_int("min_samples_leaf", 30, 150),
+            "max_features": trial.suggest_float("max_features", 0.4, 0.9),
+            "random_state": seed,
+            "n_jobs": -1,
+        }
+    raise ValueError(f"Unsupported model_name={model_name}")
+
+
+def tune_model_params(
+    model_name: str,
+    train_frame: pd.DataFrame,
+    target_col: str,
+    val_days: int,
+    n_trials: int,
+    max_train_rows: int,
+    seed: int,
+) -> tuple[dict, dict]:
+    if model_name == "LightGBM":
+        return tune_lightgbm_params(train_frame, target_col, val_days, n_trials, max_train_rows, seed)
+
+    dates = sorted(train_frame["date"].unique())
+    if len(dates) <= val_days + 30:
+        return _base_params_for(model_name), {"best_score": np.nan, "n_trials": 0}
+
+    train_dates = dates[:-val_days]
+    val_dates = dates[-val_days:]
+    fit_frame = train_frame[train_frame["date"].isin(train_dates)].dropna(subset=[target_col])
+    val_frame = train_frame[train_frame["date"].isin(val_dates)].dropna(subset=[target_col]).copy()
+    rng = np.random.default_rng(seed)
+    fit_frame = _sample_train_rows(fit_frame, _model_max_train_rows(model_name, max_train_rows), rng)
+
+    def objective(trial: optuna.Trial) -> float:
+        params = _suggest_params(model_name, trial, seed)
+        model = _make_model(model_name, params)
+        model.fit(fit_frame[FEATURE_COLS], fit_frame[target_col])
+        scored = val_frame[["date", target_col]].copy()
+        scored["score"] = model.predict(val_frame[FEATURE_COLS])
+        return _mean_daily_rank_ic(scored, "score", target_col)
+
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=seed),
+    )
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+
+    tuned_params = _base_params_for(model_name)
+    tuned_params.update(study.best_params)
+    if model_name == "XGBoost":
+        tuned_params.update({"random_state": seed, "n_jobs": -1, "tree_method": "hist", "eval_metric": "rmse", "verbosity": 0})
+    elif model_name == "CatBoost":
+        tuned_params.update({"random_seed": seed, "thread_count": -1, "verbose": False, "loss_function": "RMSE"})
+    elif model_name == "RandomForest":
+        tuned_params.update({"random_state": seed, "n_jobs": -1})
     meta = {
         "best_score": study.best_value,
         "n_trials": n_trials,
@@ -522,6 +818,107 @@ def backtest_lightgbm_optuna(
     return pd.DataFrame(returns), pd.DataFrame(tuning_records)
 
 
+def backtest_model_optuna(
+    model_name: str,
+    panel: pd.DataFrame,
+    target_col: str,
+    horizon: int,
+    top_n: int,
+    train_days: int,
+    start_days: int,
+    cost_bps: float,
+    n_trials: int,
+    val_days: int,
+    retune_every: int,
+    max_train_rows: int = 60_000,
+    size_neutral_score: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if model_name == "LightGBM":
+        return backtest_lightgbm_optuna(
+            panel,
+            target_col,
+            horizon,
+            top_n,
+            train_days,
+            start_days,
+            cost_bps,
+            n_trials,
+            val_days,
+            retune_every,
+            max_train_rows,
+            size_neutral_score,
+        )
+
+    print(f"[daily-alpha] backtesting Optuna-tuned {model_name} walk-forward...")
+    dates = sorted(panel["date"].unique())
+    rebalance_dates = _make_rebalance_dates(dates, warmup_days=start_days, step=horizon)
+
+    prev_holdings: set[str] = set()
+    returns = []
+    tuning_records = []
+    current_params = _base_params_for(model_name)
+    rng = np.random.default_rng(2026)
+
+    for i, date in enumerate(rebalance_dates, start=1):
+        date_pos = dates.index(date)
+        train_dates = dates[max(0, date_pos - train_days):date_pos]
+        train_full = panel[panel["date"].isin(train_dates)].dropna(subset=[target_col])
+        pred = panel[panel["date"] == date].copy()
+        if len(train_full) < 1000 or pred.empty:
+            continue
+
+        should_retune = i == 1 or ((i - 1) % retune_every == 0)
+        if should_retune:
+            seed = 2026 + i
+            current_params, meta = tune_model_params(
+                model_name,
+                train_full,
+                target_col,
+                val_days=val_days,
+                n_trials=n_trials,
+                max_train_rows=max_train_rows,
+                seed=seed,
+            )
+            tuning_records.append(
+                {
+                    "date": date,
+                    "model": model_name,
+                    **meta,
+                    **{f"param_{k}": v for k, v in current_params.items()},
+                }
+            )
+            print(
+                f"  optuna {model_name} retune {len(tuning_records)} at {pd.Timestamp(date).date()}: "
+                f"best_val_rank_ic={meta['best_score']:.5f}"
+            )
+
+        train = _sample_train_rows(train_full, max_train_rows, rng)
+        model = _make_model(model_name, current_params)
+        model.fit(train[FEATURE_COLS], train[target_col])
+        pred["score"] = model.predict(pred[FEATURE_COLS])
+        if size_neutral_score:
+            pred["score"] = _neutralize_score_by_size(pred)
+        selected = pred.nlargest(top_n, "score")
+        holdings = set(selected["stock_code"])
+        turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
+        gross_ret = selected[target_col].mean()
+        net_ret = gross_ret - (cost_bps / 10_000.0) * turnover
+        returns.append(
+            {
+                "date": date,
+                "strategy_ret": net_ret,
+                "gross_ret": gross_ret,
+                "turnover": turnover,
+                "n_holdings": len(selected),
+            }
+        )
+        prev_holdings = holdings
+        if i % 50 == 0:
+            print(f"  optuna-{model_name.lower()} progress: {i}/{len(rebalance_dates)} rebalances")
+
+    return pd.DataFrame(returns), pd.DataFrame(tuning_records)
+
+
 def summarize_period_returns(
     strategy: pd.DataFrame,
     benchmark: pd.DataFrame,
@@ -590,6 +987,15 @@ def main() -> None:
     parser.add_argument("--skip-ridge", action="store_true")
     parser.add_argument("--run-lightgbm", action="store_true")
     parser.add_argument("--run-lightgbm-optuna", action="store_true")
+    parser.add_argument("--run-ridge-cv", action="store_true")
+    parser.add_argument("--run-xgboost", action="store_true")
+    parser.add_argument("--run-xgboost-optuna", action="store_true")
+    parser.add_argument("--run-catboost", action="store_true")
+    parser.add_argument("--run-catboost-optuna", action="store_true")
+    parser.add_argument("--run-random-forest", action="store_true")
+    parser.add_argument("--run-random-forest-optuna", action="store_true")
+    parser.add_argument("--run-all-ml", action="store_true")
+    parser.add_argument("--run-all-ml-optuna", action="store_true")
     parser.add_argument("--lgbm-max-train-rows", type=int, default=60_000)
     parser.add_argument("--optuna-trials", type=int, default=20)
     parser.add_argument("--optuna-val-days", type=int, default=63)
@@ -665,7 +1071,16 @@ def main() -> None:
         summaries.append(summarize_period_returns(ridge_neutral_returns, benchmark, args.horizon, "Ridge size-neutral"))
         return_sets["Ridge size-neutral"] = ridge_neutral_returns
 
-    if args.run_lightgbm:
+    if args.run_ridge_cv or args.run_all_ml:
+        ridge_cv_returns, ridge_cv_params = backtest_ridge_cv(
+            panel, target_col, args.horizon, args.top_n, args.train_days, args.start_days, args.cost_bps
+        )
+        ridge_cv_returns.to_csv(output_dir / "ridge_cv_returns.csv", index=False, encoding="utf-8-sig")
+        ridge_cv_params.to_csv(output_dir / "ridge_cv_params.csv", index=False, encoding="utf-8-sig")
+        summaries.append(summarize_period_returns(ridge_cv_returns, benchmark, args.horizon, "RidgeCV"))
+        return_sets["RidgeCV"] = ridge_cv_returns
+
+    if args.run_lightgbm or args.run_all_ml:
         lgbm_returns = backtest_lightgbm(
             panel,
             target_col,
@@ -680,8 +1095,41 @@ def main() -> None:
         summaries.append(summarize_period_returns(lgbm_returns, benchmark, args.horizon, "LightGBM"))
         return_sets["LightGBM"] = lgbm_returns
 
-    if args.run_lightgbm_optuna:
-        tuned_lgbm_returns, tuned_lgbm_params = backtest_lightgbm_optuna(
+    default_model_flags = [
+        ("XGBoost", args.run_xgboost),
+        ("CatBoost", args.run_catboost),
+        ("RandomForest", args.run_random_forest),
+    ]
+    for model_name, enabled in default_model_flags:
+        if not (enabled or args.run_all_ml):
+            continue
+        model_returns = backtest_model(
+            model_name,
+            panel,
+            target_col,
+            args.horizon,
+            args.top_n,
+            args.train_days,
+            args.start_days,
+            args.cost_bps,
+            max_train_rows=args.lgbm_max_train_rows,
+        )
+        file_stub = model_name.lower().replace("randomforest", "random_forest")
+        model_returns.to_csv(output_dir / f"{file_stub}_returns.csv", index=False, encoding="utf-8-sig")
+        summaries.append(summarize_period_returns(model_returns, benchmark, args.horizon, model_name))
+        return_sets[model_name] = model_returns
+
+    optuna_model_flags = [
+        ("LightGBM", args.run_lightgbm_optuna),
+        ("XGBoost", args.run_xgboost_optuna),
+        ("CatBoost", args.run_catboost_optuna),
+        ("RandomForest", args.run_random_forest_optuna),
+    ]
+    for model_name, enabled in optuna_model_flags:
+        if not (enabled or args.run_all_ml_optuna):
+            continue
+        tuned_returns, tuned_params = backtest_model_optuna(
+            model_name,
             panel,
             target_col,
             args.horizon,
@@ -694,12 +1142,12 @@ def main() -> None:
             retune_every=args.optuna_retune_every,
             max_train_rows=args.lgbm_max_train_rows,
         )
-        tuned_lgbm_returns.to_csv(output_dir / "lightgbm_optuna_returns.csv", index=False, encoding="utf-8-sig")
-        tuned_lgbm_params.to_csv(output_dir / "lightgbm_optuna_params.csv", index=False, encoding="utf-8-sig")
-        summaries.append(
-            summarize_period_returns(tuned_lgbm_returns, benchmark, args.horizon, "LightGBM Optuna")
-        )
-        return_sets["LightGBM Optuna"] = tuned_lgbm_returns
+        file_stub = model_name.lower().replace("randomforest", "random_forest")
+        label = f"{model_name} Optuna"
+        tuned_returns.to_csv(output_dir / f"{file_stub}_optuna_returns.csv", index=False, encoding="utf-8-sig")
+        tuned_params.to_csv(output_dir / f"{file_stub}_optuna_params.csv", index=False, encoding="utf-8-sig")
+        summaries.append(summarize_period_returns(tuned_returns, benchmark, args.horizon, label))
+        return_sets[label] = tuned_returns
 
     cost_bps_list = [float(x.strip()) for x in args.cost_scenarios_bps.split(",") if x.strip()]
     cost_sensitivity = build_cost_sensitivity(return_sets, benchmark, args.horizon, cost_bps_list)
