@@ -32,7 +32,7 @@ from factors.utils import load_daily_prices
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
-FEATURE_COLS = [
+BASE_DAILY_ALPHA_FEATURE_COLS = [
     "REV_1D",
     "MOM_5D",
     "MOM_20D",
@@ -48,7 +48,32 @@ FEATURE_COLS = [
     "BETA_60D",
 ]
 
+OHLCV_CANDIDATE_FEATURE_COLS = [
+    "INTRADAY_REV_20D",
+    "OVERNIGHT_GAP_CONT_20D",
+    "LOWER_SHADOW_ADV_20D",
+    "CLOSE_LOCATION_REV_20D",
+    "VOLUME_PRICE_REVERSAL_20D",
+    "ILLIQUIDITY_SHOCK_REV_20D",
+    "TREND_EXHAUSTION_20D",
+    "VOL_ADJ_REV_20D",
+]
+
+SELECTED_INCREMENTAL_FEATURE_COLS = [
+    "VOLUME_PRICE_REVERSAL_20D",
+]
+
+FEATURE_COLS = BASE_DAILY_ALPHA_FEATURE_COLS + SELECTED_INCREMENTAL_FEATURE_COLS
+
 BASE_COST_BPS = TRANSACTION_COST * 10_000
+
+# ── Tradeability filter parameters ──────────────────────────────────────────
+# Daily price limits: main board ±10%, ChiNext(300)/STAR(688) ±20%.
+# ChiNext widened to ±20% on 2020-08-24; STAR was ±20% from inception.
+MAIN_BOARD_LIMIT = 0.095          # entry blocked if next-open gap >= this
+WIDE_BOARD_LIMIT = 0.195
+CHINEXT_WIDE_LIMIT_DATE = pd.Timestamp("2020-08-24")
+MIN_LIST_DAYS = 120               # drop names with < 120 traded sessions
 
 LIGHTGBM_BASE_PARAMS = {
     "objective": "regression",
@@ -143,6 +168,8 @@ def build_daily_panel(horizon: int = 5) -> pd.DataFrame:
         g = group.sort_values("date").copy()
         close = g["close"]
         ret = g["ret_1d"]
+        prev_close = close.shift(1)
+        day_range = (g["high"] - g["low"]).replace(0, np.nan)
 
         g["REV_1D"] = -ret
         g["MOM_5D"] = close / close.shift(5) - 1.0
@@ -160,6 +187,25 @@ def build_daily_panel(horizon: int = 5) -> pd.DataFrame:
         high_20 = g["high"].rolling(20, min_periods=15).max()
         low_20 = g["low"].rolling(20, min_periods=15).min()
         g["RANGE_20D"] = high_20 / low_20.replace(0, np.nan) - 1.0
+
+        intraday_ret = close / g["open"].replace(0, np.nan) - 1.0
+        overnight_gap = g["open"] / prev_close.replace(0, np.nan) - 1.0
+        upper_shadow = g["high"] - np.maximum(g["open"], close)
+        lower_shadow = np.minimum(g["open"], close) - g["low"]
+        close_location = (2.0 * close - g["high"] - g["low"]) / day_range
+        log_volume_change = np.log(g["volume"].replace(0, np.nan)).diff()
+        abs_path_20 = ret.abs().rolling(20, min_periods=15).sum()
+
+        g["INTRADAY_REV_20D"] = -intraday_ret.rolling(20, min_periods=15).mean()
+        g["OVERNIGHT_GAP_CONT_20D"] = overnight_gap.rolling(20, min_periods=15).mean()
+        g["LOWER_SHADOW_ADV_20D"] = ((lower_shadow - upper_shadow) / day_range).rolling(20, min_periods=15).mean()
+        g["CLOSE_LOCATION_REV_20D"] = -close_location.rolling(20, min_periods=15).mean()
+        g["VOLUME_PRICE_REVERSAL_20D"] = -ret.rolling(20, min_periods=15).corr(log_volume_change)
+        g["ILLIQUIDITY_SHOCK_REV_20D"] = -(ret * g["VOLUME_RATIO_5_20"].fillna(0.0)).rolling(
+            20, min_periods=15
+        ).mean()
+        g["TREND_EXHAUSTION_20D"] = (close / close.shift(20) - 1.0).abs() / abs_path_20.replace(0, np.nan)
+        g["VOL_ADJ_REV_20D"] = -g["MOM_20D"] / g["VOL_20D"].replace(0, np.nan)
         g["SIZE"] = -np.log((close * g["outstanding_share"]).replace(0, np.nan))
 
         cov = ret.rolling(60, min_periods=40).cov(g["index_ret"])
@@ -167,7 +213,28 @@ def build_daily_panel(horizon: int = 5) -> pd.DataFrame:
         g["BETA_60D"] = cov / var.replace(0, np.nan)
         # Signal is observed after today's close; trade from next open.
         g[f"ret_fwd_{horizon}d"] = g["open"].shift(-(horizon + 1)) / g["open"].shift(-1) - 1.0
-        parts.append(g[["stock_code", "date", f"ret_fwd_{horizon}d", *FEATURE_COLS]])
+
+        # Tradeability of the position decided at close of t (entered at open[t+1]):
+        #  - not limit-up at entry (board/date-aware 10%/20% daily limit)
+        #  - not suspended at entry (next-day volume > 0)
+        #  - stock has traded >= MIN_LIST_DAYS sessions (drop new listings)
+        code = str(stock_code)
+        limit = pd.Series(MAIN_BOARD_LIMIT, index=g.index)
+        if code.startswith("688"):
+            limit[:] = WIDE_BOARD_LIMIT
+        elif code.startswith("300"):
+            limit[g["date"] >= CHINEXT_WIDE_LIMIT_DATE] = WIDE_BOARD_LIMIT
+        next_open = g["open"].shift(-1)
+        next_vol = g["volume"].shift(-1)
+        next_gap = next_open / close - 1.0
+        cum_td = np.arange(1, len(g) + 1)
+        g["tradeable"] = (
+            (next_gap < limit)
+            & (next_vol > 0)
+            & (next_open > 0)
+            & (cum_td >= MIN_LIST_DAYS)
+        )
+        parts.append(g[["stock_code", "date", f"ret_fwd_{horizon}d", "tradeable", *FEATURE_COLS]])
 
     panel = pd.concat(parts, ignore_index=True)
     panel = panel.dropna(subset=[f"ret_fwd_{horizon}d"]).copy()
@@ -216,6 +283,29 @@ def compute_daily_ic(panel: pd.DataFrame, target_col: str) -> tuple[pd.DataFrame
 
 def _make_rebalance_dates(dates: list[pd.Timestamp], warmup_days: int, step: int) -> list[pd.Timestamp]:
     return dates[warmup_days::step]
+
+
+def _known_label_dates(
+    dates: list[pd.Timestamp],
+    date_pos: int,
+    horizon: int,
+    lookback_days: int | None = None,
+) -> list[pd.Timestamp]:
+    """
+    Return dates whose forward-return labels are observable by rebalance time.
+
+    ret_fwd_h uses open[t+1] through open[t+h+1]. At the close of rebalance
+    date T, labels are known only for sample dates t where t+h+1 <= T.
+    """
+    end_pos = max(0, date_pos - horizon)
+    start_pos = 0 if lookback_days is None else max(0, end_pos - lookback_days)
+    return dates[start_pos:end_pos]
+
+
+def _select_top_n(frame: pd.DataFrame, top_n: int) -> pd.DataFrame:
+    """Top-N by score among tradeable names only (excl. limit-up/suspended/new listings)."""
+    pool = frame[frame["tradeable"]] if "tradeable" in frame.columns else frame
+    return pool.nlargest(top_n, "score")
 
 
 def _normalize_weights(raw: pd.Series) -> pd.Series:
@@ -313,14 +403,16 @@ def backtest_ic_weight(
     returns = []
     weight_rows = []
     for date in rebalance_dates:
+        date_pos = dates.index(date)
         cross = panel[panel["date"] == date].copy()
-        hist = ic_indexed.loc[ic_indexed.index < date, FEATURE_COLS].tail(ic_window)
+        known_dates = _known_label_dates(dates, date_pos, horizon, ic_window)
+        hist = ic_indexed.reindex(known_dates)[FEATURE_COLS].dropna(how="all")
         raw = hist.mean()
         weights = _normalize_weights(raw)
         cross["score"] = cross[FEATURE_COLS].mul(weights, axis=1).sum(axis=1)
         if size_neutral_score:
             cross["score"] = _neutralize_score_by_size(cross)
-        selected = cross.nlargest(top_n, "score")
+        selected = _select_top_n(cross, top_n)
         holdings = set(selected["stock_code"])
         turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
         gross_ret = selected[target_col].mean()
@@ -358,7 +450,7 @@ def backtest_ridge(
     returns = []
     for i, date in enumerate(rebalance_dates, start=1):
         date_pos = dates.index(date)
-        train_dates = dates[max(0, date_pos - train_days):date_pos]
+        train_dates = _known_label_dates(dates, date_pos, horizon, train_days)
         train = panel[panel["date"].isin(train_dates)].dropna(subset=[target_col])
         pred = panel[panel["date"] == date].copy()
         if len(train) < 1000 or pred.empty:
@@ -374,7 +466,7 @@ def backtest_ridge(
         pred["score"] = model.predict(x_pred)
         if size_neutral_score:
             pred["score"] = _neutralize_score_by_size(pred)
-        selected = pred.nlargest(top_n, "score")
+        selected = _select_top_n(pred, top_n)
         holdings = set(selected["stock_code"])
         turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
         gross_ret = selected[target_col].mean()
@@ -415,7 +507,7 @@ def backtest_ridge_cv(
     param_rows = []
     for i, date in enumerate(rebalance_dates, start=1):
         date_pos = dates.index(date)
-        train_dates = dates[max(0, date_pos - train_days):date_pos]
+        train_dates = _known_label_dates(dates, date_pos, horizon, train_days)
         train = panel[panel["date"].isin(train_dates)].dropna(subset=[target_col])
         pred = panel[panel["date"] == date].copy()
         if len(train) < 1000 or pred.empty:
@@ -431,7 +523,7 @@ def backtest_ridge_cv(
         pred["score"] = model.predict(x_pred)
         if size_neutral_score:
             pred["score"] = _neutralize_score_by_size(pred)
-        selected = pred.nlargest(top_n, "score")
+        selected = _select_top_n(pred, top_n)
         holdings = set(selected["stock_code"])
         turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
         gross_ret = selected[target_col].mean()
@@ -473,7 +565,7 @@ def backtest_lightgbm(
     rng = np.random.default_rng(42)
     for i, date in enumerate(rebalance_dates, start=1):
         date_pos = dates.index(date)
-        train_dates = dates[max(0, date_pos - train_days):date_pos]
+        train_dates = _known_label_dates(dates, date_pos, horizon, train_days)
         train = panel[panel["date"].isin(train_dates)].dropna(subset=[target_col])
         pred = panel[panel["date"] == date].copy()
         if len(train) < 1000 or pred.empty:
@@ -485,7 +577,7 @@ def backtest_lightgbm(
         pred["score"] = model.predict(pred[FEATURE_COLS])
         if size_neutral_score:
             pred["score"] = _neutralize_score_by_size(pred)
-        selected = pred.nlargest(top_n, "score")
+        selected = _select_top_n(pred, top_n)
         holdings = set(selected["stock_code"])
         turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
         gross_ret = selected[target_col].mean()
@@ -529,7 +621,7 @@ def backtest_model(
     rng = np.random.default_rng(42)
     for i, date in enumerate(rebalance_dates, start=1):
         date_pos = dates.index(date)
-        train_dates = dates[max(0, date_pos - train_days):date_pos]
+        train_dates = _known_label_dates(dates, date_pos, horizon, train_days)
         train = panel[panel["date"].isin(train_dates)].dropna(subset=[target_col])
         pred = panel[panel["date"] == date].copy()
         if len(train) < 1000 or pred.empty:
@@ -541,7 +633,7 @@ def backtest_model(
         pred["score"] = model.predict(pred[FEATURE_COLS])
         if size_neutral_score:
             pred["score"] = _neutralize_score_by_size(pred)
-        selected = pred.nlargest(top_n, "score")
+        selected = _select_top_n(pred, top_n)
         holdings = set(selected["stock_code"])
         turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
         gross_ret = selected[target_col].mean()
@@ -569,13 +661,16 @@ def tune_lightgbm_params(
     n_trials: int,
     max_train_rows: int,
     seed: int,
+    horizon: int = 0,
 ) -> tuple[dict, dict]:
     dates = sorted(train_frame["date"].unique())
-    if len(dates) <= val_days + 30:
+    if len(dates) <= val_days + horizon + 30:
         return LIGHTGBM_BASE_PARAMS.copy(), {"best_score": np.nan, "n_trials": 0}
 
-    train_dates = dates[:-val_days]
+    # Embargo: drop the last `horizon` train days so their forward-return labels
+    # (ret_fwd_h uses open[t+1]..open[t+h+1]) do not overlap the validation window.
     val_dates = dates[-val_days:]
+    train_dates = dates[: -(val_days + horizon)] if horizon > 0 else dates[:-val_days]
     fit_frame = train_frame[train_frame["date"].isin(train_dates)].dropna(subset=[target_col])
     val_frame = train_frame[train_frame["date"].isin(val_dates)].dropna(subset=[target_col]).copy()
     rng = np.random.default_rng(seed)
@@ -688,16 +783,19 @@ def tune_model_params(
     n_trials: int,
     max_train_rows: int,
     seed: int,
+    horizon: int = 0,
 ) -> tuple[dict, dict]:
     if model_name == "LightGBM":
-        return tune_lightgbm_params(train_frame, target_col, val_days, n_trials, max_train_rows, seed)
+        return tune_lightgbm_params(train_frame, target_col, val_days, n_trials, max_train_rows, seed, horizon)
 
     dates = sorted(train_frame["date"].unique())
-    if len(dates) <= val_days + 30:
+    if len(dates) <= val_days + horizon + 30:
         return _base_params_for(model_name), {"best_score": np.nan, "n_trials": 0}
 
-    train_dates = dates[:-val_days]
+    # Embargo: drop the last `horizon` train days so their forward-return labels
+    # do not overlap the validation window.
     val_dates = dates[-val_days:]
+    train_dates = dates[: -(val_days + horizon)] if horizon > 0 else dates[:-val_days]
     fit_frame = train_frame[train_frame["date"].isin(train_dates)].dropna(subset=[target_col])
     val_frame = train_frame[train_frame["date"].isin(val_dates)].dropna(subset=[target_col]).copy()
     rng = np.random.default_rng(seed)
@@ -762,7 +860,7 @@ def backtest_lightgbm_optuna(
 
     for i, date in enumerate(rebalance_dates, start=1):
         date_pos = dates.index(date)
-        train_dates = dates[max(0, date_pos - train_days):date_pos]
+        train_dates = _known_label_dates(dates, date_pos, horizon, train_days)
         train_full = panel[panel["date"].isin(train_dates)].dropna(subset=[target_col])
         pred = panel[panel["date"] == date].copy()
         if len(train_full) < 1000 or pred.empty:
@@ -778,6 +876,7 @@ def backtest_lightgbm_optuna(
                 n_trials=n_trials,
                 max_train_rows=max_train_rows,
                 seed=seed,
+                horizon=horizon,
             )
             tuning_records.append(
                 {
@@ -797,7 +896,7 @@ def backtest_lightgbm_optuna(
         pred["score"] = model.predict(pred[FEATURE_COLS])
         if size_neutral_score:
             pred["score"] = _neutralize_score_by_size(pred)
-        selected = pred.nlargest(top_n, "score")
+        selected = _select_top_n(pred, top_n)
         holdings = set(selected["stock_code"])
         turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
         gross_ret = selected[target_col].mean()
@@ -861,7 +960,7 @@ def backtest_model_optuna(
 
     for i, date in enumerate(rebalance_dates, start=1):
         date_pos = dates.index(date)
-        train_dates = dates[max(0, date_pos - train_days):date_pos]
+        train_dates = _known_label_dates(dates, date_pos, horizon, train_days)
         train_full = panel[panel["date"].isin(train_dates)].dropna(subset=[target_col])
         pred = panel[panel["date"] == date].copy()
         if len(train_full) < 1000 or pred.empty:
@@ -878,6 +977,7 @@ def backtest_model_optuna(
                 n_trials=n_trials,
                 max_train_rows=max_train_rows,
                 seed=seed,
+                horizon=horizon,
             )
             tuning_records.append(
                 {
@@ -898,7 +998,7 @@ def backtest_model_optuna(
         pred["score"] = model.predict(pred[FEATURE_COLS])
         if size_neutral_score:
             pred["score"] = _neutralize_score_by_size(pred)
-        selected = pred.nlargest(top_n, "score")
+        selected = _select_top_n(pred, top_n)
         holdings = set(selected["stock_code"])
         turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
         gross_ret = selected[target_col].mean()
