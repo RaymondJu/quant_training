@@ -155,6 +155,7 @@ def build_daily_panel(horizon: int = 5) -> pd.DataFrame:
     print("[daily-alpha] loading daily prices...")
     daily = load_daily_prices().copy()
     daily = daily.sort_values(["stock_code", "date"]).reset_index(drop=True)
+    trading_calendar = pd.DatetimeIndex(sorted(daily["date"].unique()))
     daily["ret_1d"] = daily["pct_change"] / 100.0
     daily["dollar_volume"] = daily["turnover"].replace(0, np.nan)
 
@@ -211,33 +212,72 @@ def build_daily_panel(horizon: int = 5) -> pd.DataFrame:
         cov = ret.rolling(60, min_periods=40).cov(g["index_ret"])
         var = g["index_ret"].rolling(60, min_periods=40).var()
         g["BETA_60D"] = cov / var.replace(0, np.nan)
-        # Signal is observed after today's close; trade from next open.
-        g[f"ret_fwd_{horizon}d"] = g["open"].shift(-(horizon + 1)) / g["open"].shift(-1) - 1.0
 
-        # Tradeability of the position decided at close of t (entered at open[t+1]):
-        #  - not limit-up at entry (board/date-aware 10%/20% daily limit)
-        #  - not suspended at entry (next-day volume > 0)
-        #  - stock has traded >= MIN_LIST_DAYS sessions (drop new listings)
+        # Reindex to the market calendar. The source omits most suspension days,
+        # so per-stock shift() would otherwise jump over them and shorten both
+        # the holding period and the execution checks.
         code = str(stock_code)
+        stock_calendar = trading_calendar[trading_calendar >= g["date"].min()]
+        g = g.set_index("date").reindex(stock_calendar)
+        g.index.name = "date"
+        g["stock_code"] = code
+        has_quote = g["open"].notna() & g["close"].notna() & (g["volume"].fillna(0) > 0)
+        prior_close = g["close"].ffill().shift(1)
+        open_gap = g["open"] / prior_close.replace(0, np.nan) - 1.0
+
         limit = pd.Series(MAIN_BOARD_LIMIT, index=g.index)
         if code.startswith("688"):
             limit[:] = WIDE_BOARD_LIMIT
         elif code.startswith("300"):
-            limit[g["date"] >= CHINEXT_WIDE_LIMIT_DATE] = WIDE_BOARD_LIMIT
-        next_open = g["open"].shift(-1)
-        next_vol = g["volume"].shift(-1)
-        next_gap = next_open / close - 1.0
-        cum_td = np.arange(1, len(g) + 1)
+            limit[g.index >= CHINEXT_WIDE_LIMIT_DATE] = WIDE_BOARD_LIMIT
+
+        buyable_at_open = has_quote & (g["open"] > 0) & (open_gap < limit)
+        sellable_at_open = has_quote & (g["open"] > 0) & (open_gap > -limit)
+        marked_open = g["open"].where(has_quote).fillna(g["close"].ffill())
+        cum_td = has_quote.cumsum()
+
+        # Signal is observed after close[t], with execution at open[t+1].
+        # The label uses exact market-calendar dates and remains the model target.
+        g[f"ret_fwd_{horizon}d"] = (
+            g["open"].shift(-(horizon + 1)) / g["open"].shift(-1) - 1.0
+        )
+        # Backtests use marked returns so suspended holdings remain in the book.
+        g["execution_ret"] = (
+            marked_open.shift(-(horizon + 1)) / marked_open.shift(-1) - 1.0
+        )
         g["tradeable"] = (
-            (next_gap < limit)
-            & (next_vol > 0)
-            & (next_open > 0)
+            has_quote
+            & buyable_at_open.shift(-1, fill_value=False)
             & (cum_td >= MIN_LIST_DAYS)
         )
-        parts.append(g[["stock_code", "date", f"ret_fwd_{horizon}d", "tradeable", *FEATURE_COLS]])
+        # Existing holdings may be sold only if next open is quoted and not
+        # limit-down. False also covers omitted suspension rows.
+        g["sellable"] = sellable_at_open.shift(-1, fill_value=False)
+        g["suspended_next_open"] = ~has_quote.shift(-1, fill_value=False)
+        g["limit_down_next_open"] = (
+            has_quote.shift(-1, fill_value=False)
+            & ~sellable_at_open.shift(-1, fill_value=False)
+        )
+        g = g.reset_index()
+        parts.append(
+            g[
+                [
+                    "stock_code",
+                    "date",
+                    f"ret_fwd_{horizon}d",
+                    "execution_ret",
+                    "tradeable",
+                    "sellable",
+                    "suspended_next_open",
+                    "limit_down_next_open",
+                    *FEATURE_COLS,
+                ]
+            ]
+        )
 
     panel = pd.concat(parts, ignore_index=True)
-    panel = panel.dropna(subset=[f"ret_fwd_{horizon}d"]).copy()
+    valid_dates = panel.groupby("date")[f"ret_fwd_{horizon}d"].transform("count") > 0
+    panel = panel[valid_dates].copy()
 
     print("[daily-alpha] cross-sectional winsorize/zscore...")
     for col in FEATURE_COLS:
@@ -308,6 +348,43 @@ def _select_top_n(frame: pd.DataFrame, top_n: int) -> pd.DataFrame:
     return pool.nlargest(top_n, "score")
 
 
+def _apply_execution_constraints(
+    frame: pd.DataFrame,
+    prev_holdings: set[str],
+    top_n: int,
+) -> tuple[pd.DataFrame, set[str], dict]:
+    """Carry unsellable holdings and fill only the remaining portfolio slots."""
+    cross = frame.drop_duplicates("stock_code", keep="last").set_index("stock_code", drop=False)
+    available_prev = prev_holdings.intersection(cross.index)
+    sellable = cross["sellable"].fillna(False) if "sellable" in cross else pd.Series(True, index=cross.index)
+    locked = {code for code in available_prev if not bool(sellable.loc[code])}
+
+    pool = cross[cross["tradeable"].fillna(False)] if "tradeable" in cross else cross
+    ranked = pool.drop(index=list(locked), errors="ignore").nlargest(max(0, top_n - len(locked)), "score")
+    holdings = locked.union(ranked.index.astype(str))
+    selected = cross.loc[list(holdings)].copy() if holdings else cross.iloc[:0].copy()
+
+    turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
+    gross_ret = selected["execution_ret"].mean()
+    stats = {
+        "gross_ret": gross_ret,
+        "turnover": turnover,
+        "n_holdings": len(selected),
+        "n_locked": len(locked),
+        "n_limit_down_locked": int(
+            selected.loc[list(locked), "limit_down_next_open"].fillna(False).sum()
+        )
+        if locked
+        else 0,
+        "n_suspended_locked": int(
+            selected.loc[list(locked), "suspended_next_open"].fillna(False).sum()
+        )
+        if locked
+        else 0,
+    }
+    return selected.reset_index(drop=True), holdings, stats
+
+
 def _normalize_weights(raw: pd.Series) -> pd.Series:
     raw = raw.replace([np.inf, -np.inf], np.nan).fillna(0.0)
     denom = raw.abs().sum()
@@ -317,7 +394,8 @@ def _normalize_weights(raw: pd.Series) -> pd.Series:
 
 
 def _neutralize_score_by_size(cross: pd.DataFrame, score_col: str = "score") -> pd.Series:
-    valid = cross[[score_col, "SIZE"]].replace([np.inf, -np.inf], np.nan).dropna()
+    eligible = cross["tradeable"].fillna(False) if "tradeable" in cross.columns else pd.Series(True, index=cross.index)
+    valid = cross.loc[eligible, [score_col, "SIZE"]].replace([np.inf, -np.inf], np.nan).dropna()
     if len(valid) < 30 or valid["SIZE"].std(ddof=0) < 1e-12:
         return cross[score_col]
     x = np.column_stack([np.ones(len(valid)), valid["SIZE"].values])
@@ -412,18 +490,13 @@ def backtest_ic_weight(
         cross["score"] = cross[FEATURE_COLS].mul(weights, axis=1).sum(axis=1)
         if size_neutral_score:
             cross["score"] = _neutralize_score_by_size(cross)
-        selected = _select_top_n(cross, top_n)
-        holdings = set(selected["stock_code"])
-        turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
-        gross_ret = selected[target_col].mean()
-        net_ret = gross_ret - (cost_bps / 10_000.0) * turnover
+        selected, holdings, execution = _apply_execution_constraints(cross, prev_holdings, top_n)
+        net_ret = execution["gross_ret"] - (cost_bps / 10_000.0) * execution["turnover"]
         returns.append(
             {
                 "date": date,
                 "strategy_ret": net_ret,
-                "gross_ret": gross_ret,
-                "turnover": turnover,
-                "n_holdings": len(selected),
+                **execution,
             }
         )
         weight_rows.append({"date": date, **weights.to_dict()})
@@ -466,18 +539,13 @@ def backtest_ridge(
         pred["score"] = model.predict(x_pred)
         if size_neutral_score:
             pred["score"] = _neutralize_score_by_size(pred)
-        selected = _select_top_n(pred, top_n)
-        holdings = set(selected["stock_code"])
-        turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
-        gross_ret = selected[target_col].mean()
-        net_ret = gross_ret - (cost_bps / 10_000.0) * turnover
+        selected, holdings, execution = _apply_execution_constraints(pred, prev_holdings, top_n)
+        net_ret = execution["gross_ret"] - (cost_bps / 10_000.0) * execution["turnover"]
         returns.append(
             {
                 "date": date,
                 "strategy_ret": net_ret,
-                "gross_ret": gross_ret,
-                "turnover": turnover,
-                "n_holdings": len(selected),
+                **execution,
             }
         )
         prev_holdings = holdings
@@ -523,18 +591,13 @@ def backtest_ridge_cv(
         pred["score"] = model.predict(x_pred)
         if size_neutral_score:
             pred["score"] = _neutralize_score_by_size(pred)
-        selected = _select_top_n(pred, top_n)
-        holdings = set(selected["stock_code"])
-        turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
-        gross_ret = selected[target_col].mean()
-        net_ret = gross_ret - (cost_bps / 10_000.0) * turnover
+        selected, holdings, execution = _apply_execution_constraints(pred, prev_holdings, top_n)
+        net_ret = execution["gross_ret"] - (cost_bps / 10_000.0) * execution["turnover"]
         returns.append(
             {
                 "date": date,
                 "strategy_ret": net_ret,
-                "gross_ret": gross_ret,
-                "turnover": turnover,
-                "n_holdings": len(selected),
+                **execution,
             }
         )
         param_rows.append({"date": date, "alpha": float(model.alpha_)})
@@ -577,18 +640,13 @@ def backtest_lightgbm(
         pred["score"] = model.predict(pred[FEATURE_COLS])
         if size_neutral_score:
             pred["score"] = _neutralize_score_by_size(pred)
-        selected = _select_top_n(pred, top_n)
-        holdings = set(selected["stock_code"])
-        turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
-        gross_ret = selected[target_col].mean()
-        net_ret = gross_ret - (cost_bps / 10_000.0) * turnover
+        selected, holdings, execution = _apply_execution_constraints(pred, prev_holdings, top_n)
+        net_ret = execution["gross_ret"] - (cost_bps / 10_000.0) * execution["turnover"]
         returns.append(
             {
                 "date": date,
                 "strategy_ret": net_ret,
-                "gross_ret": gross_ret,
-                "turnover": turnover,
-                "n_holdings": len(selected),
+                **execution,
             }
         )
         prev_holdings = holdings
@@ -633,18 +691,13 @@ def backtest_model(
         pred["score"] = model.predict(pred[FEATURE_COLS])
         if size_neutral_score:
             pred["score"] = _neutralize_score_by_size(pred)
-        selected = _select_top_n(pred, top_n)
-        holdings = set(selected["stock_code"])
-        turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
-        gross_ret = selected[target_col].mean()
-        net_ret = gross_ret - (cost_bps / 10_000.0) * turnover
+        selected, holdings, execution = _apply_execution_constraints(pred, prev_holdings, top_n)
+        net_ret = execution["gross_ret"] - (cost_bps / 10_000.0) * execution["turnover"]
         returns.append(
             {
                 "date": date,
                 "strategy_ret": net_ret,
-                "gross_ret": gross_ret,
-                "turnover": turnover,
-                "n_holdings": len(selected),
+                **execution,
             }
         )
         prev_holdings = holdings
@@ -896,18 +949,13 @@ def backtest_lightgbm_optuna(
         pred["score"] = model.predict(pred[FEATURE_COLS])
         if size_neutral_score:
             pred["score"] = _neutralize_score_by_size(pred)
-        selected = _select_top_n(pred, top_n)
-        holdings = set(selected["stock_code"])
-        turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
-        gross_ret = selected[target_col].mean()
-        net_ret = gross_ret - (cost_bps / 10_000.0) * turnover
+        selected, holdings, execution = _apply_execution_constraints(pred, prev_holdings, top_n)
+        net_ret = execution["gross_ret"] - (cost_bps / 10_000.0) * execution["turnover"]
         returns.append(
             {
                 "date": date,
                 "strategy_ret": net_ret,
-                "gross_ret": gross_ret,
-                "turnover": turnover,
-                "n_holdings": len(selected),
+                **execution,
             }
         )
         prev_holdings = holdings
@@ -998,18 +1046,13 @@ def backtest_model_optuna(
         pred["score"] = model.predict(pred[FEATURE_COLS])
         if size_neutral_score:
             pred["score"] = _neutralize_score_by_size(pred)
-        selected = _select_top_n(pred, top_n)
-        holdings = set(selected["stock_code"])
-        turnover = 1.0 if not prev_holdings else len(holdings.symmetric_difference(prev_holdings)) / (2 * top_n)
-        gross_ret = selected[target_col].mean()
-        net_ret = gross_ret - (cost_bps / 10_000.0) * turnover
+        selected, holdings, execution = _apply_execution_constraints(pred, prev_holdings, top_n)
+        net_ret = execution["gross_ret"] - (cost_bps / 10_000.0) * execution["turnover"]
         returns.append(
             {
                 "date": date,
                 "strategy_ret": net_ret,
-                "gross_ret": gross_ret,
-                "turnover": turnover,
-                "n_holdings": len(selected),
+                **execution,
             }
         )
         prev_holdings = holdings
@@ -1051,6 +1094,14 @@ def summarize_period_returns(
             "WinRate": (returns > 0).mean(),
             "Periods": len(returns),
             "Avg_Turnover": strategy["turnover"].mean(),
+            "Avg_Locked": strategy["n_locked"].mean() if "n_locked" in strategy else 0.0,
+            "Locked_Rebalances": int((strategy["n_locked"] > 0).sum()) if "n_locked" in strategy else 0,
+            "Limit_Down_Locks": int(strategy["n_limit_down_locked"].sum())
+            if "n_limit_down_locked" in strategy
+            else 0,
+            "Suspension_Locks": int(strategy["n_suspended_locked"].sum())
+            if "n_suspended_locked" in strategy
+            else 0,
             "Benchmark_Ann_Return": bench_ann,
             "Excess_Ann_Return": excess_ann,
             "Tracking_Error": tracking_error,
