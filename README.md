@@ -1,32 +1,81 @@
-# CSI500 日频价量 Alpha 研究
+# CSI500 日频价量 Alpha：可交易约束版
 
-> 基于静态中证 500 股票池的日频价量 Alpha 研究流程，覆盖日频特征构造、Rank IC 检验、IC 加权组合、Ridge / RidgeCV / LightGBM / XGBoost / CatBoost / RandomForest 及 Optuna 调参版本的 walk-forward 横向比较、市值中性化和交易成本敏感性分析。
+> 基于静态中证 500 股票池的日频价量研究流程。当前版本重点不是追求更高的回测收益，而是把标签可得性、涨跌停、停牌和调仓执行放到同一套可复现口径中。
 
-本分支只展示 `csi500-daily-alpha` 实验结果。旧版月频图表和结果文件已从本分支的 Git 追踪中移除，避免混淆。
+![最新策略净值](docs/readme_assets/csi500_daily_latest_nav.svg)
 
----
+## 核心结论
 
-## 实验口径
-
-- 股票池：静态中证 500 成分股，共 499 只可用股票。
-- 数据频率：日频行情，每个交易日、每只股票一条样本。
-- 特征来源：纯价量 / 技术面特征，不使用财务基本面因子。
-- 预测标签：未来 5 个交易日收益。
-- 执行假设：第 t 日收盘后生成信号，第 t+1 日开盘买入，持有 5 个交易日。
-- 调仓频率：每 5 个交易日调仓一次。
-- 买入约束：建仓日（t+1 开盘）涨停（按板块/日期区分 ±10%/±20%）、停牌或上市不足 120 个交易日的标的不纳入选股。
-- 卖出约束：已有持仓若在调仓日开盘跌停或停牌，则不能卖出并继续占用组合名额；只用剩余名额买入新标的。
-- 停牌处理：按全市场交易日历补齐股票缺失交易日，停牌期间使用最近可用价格盯市，不再由单股票 `shift()` 跳过停牌期。
-- 基准：中证 500 / 510500 ETF 净值 proxy。
-- 交易成本：主表使用 30 bps，并额外输出 30 / 60 / 100 bps 敏感性。
-- 重要限制：本地没有历史 ST / *ST 状态和交易所官方涨跌停价。ST 过滤尚未实现，涨跌停使用板块和日期阈值近似识别。
-- 重要限制：股票池是静态名单，存在幸存者偏差；当前结果是研究 demo，不是生产级无偏回测。
-
-> 当前版本在标签可得性、Optuna embargo 和买入过滤基础上，进一步加入跌停无法卖出与停牌锁仓。实现与数据缺口见 `CSI500_DAILY_TRADE_CONSTRAINT_FIX_REPORT.md`。
+- 当前四个已按最新交易约束重跑的策略中，`Ridge` 表现最稳健：年化收益 **21.14%**、Sharpe **0.793**。
+- 加入停牌和跌停卖出约束后，普通 `Ridge` 年化只下降 **0.26 个百分点**；市值中性版本受影响更明显。
+- 执行网格识别出 **20,805** 条次日停牌/无报价记录和 **1,664** 条次日跌停不可卖记录。
+- 结果仍受到静态成分股幸存者偏差影响；本地也缺少历史 ST / *ST 状态，因此这仍是研究型回测，不是生产级无偏结果。
 
 ---
 
-## 日频 Alpha 特征
+## 最终披露口径
+
+| 项目 | 当前口径 |
+|---|---|
+| 股票池 | 2026-05-09 静态中证 500 成分股，499 只股票有可用行情 |
+| 原始行情区间 | 2015-01-05 至 2025-12-31 |
+| 数据频率 | 日频 OHLCV、成交额、换手率和流通股本 |
+| 信号时点 | 第 `t` 日收盘后 |
+| 建仓时点 | 第 `t+1` 个市场交易日开盘 |
+| 预测标签 | `open[t+6] / open[t+1] - 1`，即未来 5 个交易日开盘到开盘收益 |
+| 调仓规则 | 每 5 个市场交易日调仓，Top 50 等权 |
+| 交易成本 | 按组合换手扣除 30 bps |
+| 模型训练 | Walk-forward，只使用调仓时点已经完整实现的历史标签 |
+| 当前主结果 | IC-weight、IC-weight size-neutral、Ridge、Ridge size-neutral |
+
+绩效表使用各策略自身的有效 walk-forward 区间：IC 组合 472 个调仓期，Ridge 组合 383 个调仓期。顶部净值图为了横向可比，统一使用 2018-02-05 至 2025-12-22 的共同区间。
+
+---
+
+## 最新结果
+
+以下是当前版本唯一的主结果表。所有数字均已包含：
+
+- 标签可得性修复；
+- 次日涨停、停牌和新股买入过滤；
+- 次日跌停或停牌时无法卖出的锁仓约束；
+- 30 bps 换手成本。
+
+| 策略 | 年化收益 | 年化波动 | Sharpe | 最大回撤 | 平均换手 | 锁仓调仓次数 |
+|---|---:|---:|---:|---:|---:|---:|
+| IC-weight | 10.19% | 19.62% | 0.519 | -34.55% | 36.32% | 153 |
+| IC-weight size-neutral | 8.58% | 19.33% | 0.444 | -33.41% | 37.38% | 153 |
+| **Ridge** | **21.14%** | 26.67% | **0.793** | **-35.37%** | **35.45%** | 52 |
+| Ridge size-neutral | 11.74% | 25.77% | 0.456 | -40.86% | 43.71% | 56 |
+
+![卖出约束影响](docs/readme_assets/csi500_tradeability_impact.svg)
+
+图中锁仓事件按持仓计数，同一次调仓可能有多只股票被锁，因此事件数可以大于受影响的调仓次数。
+
+### 如何理解结果
+
+1. 普通 Ridge 从 21.39% 降至 21.14%，说明它对新增卖出约束相对稳健。
+2. 市值中性策略下降更多，说明它们更容易持有停牌或跌停锁仓标的。
+3. 锁仓事件以停牌为主，跌停事件数量较少，但跌停约束在 Ridge 持仓中占比更高。
+4. 不再把尚未按最新卖出约束重跑的树模型结果放入主表，避免混用不同版本口径。
+
+---
+
+## 研究流程
+
+```mermaid
+flowchart LR
+    A["日频 OHLCV"] --> B["价量特征"]
+    B --> C["横截面缩尾与标准化"]
+    C --> D["Point-in-time 标签与训练窗口"]
+    D --> E["IC / Ridge 打分"]
+    E --> F["次日买入过滤"]
+    F --> G["停牌或跌停持仓锁定"]
+    G --> H["剩余名额选 Top 50"]
+    H --> I["扣除换手成本"]
+```
+
+### 日频特征
 
 | 类别 | 特征 |
 |---|---|
@@ -34,133 +83,155 @@
 | 动量 | `MOM_5D`, `MOM_20D`, `MOM_60D` |
 | 波动率 | `VOL_20D`, `RANGE_20D` |
 | 流动性 | `TURN_5D`, `TURN_20D`, `AMIHUD_20D`, `VOLUME_RATIO_5_20` |
-| 偏离度 | `BIAS_20` |
-| 风险 / 规模 | `SIZE`, `BETA_60D` |
+| 价格偏离 | `BIAS_20` |
+| 风险与规模 | `SIZE`, `BETA_60D` |
+| 增量价量信号 | `VOLUME_PRICE_REVERSAL_20D` |
 
-所有特征在每日横截面上做缩尾和标准化。模型训练、调参和组合构建都只使用历史已知数据，避免 look-ahead。
+所有特征按每日横截面做 1% / 99% 缩尾和 z-score 标准化。
 
----
+### 标签可得性
 
-## 最新交易约束结果
+目标收益使用：
 
-本轮使用严格市场交易日历重跑四个代表策略。参数仍为 2015-2025、5 日调仓、Top 50、30 bps。
+```python
+ret_fwd_5d = open[t + 6] / open[t + 1] - 1
+```
 
-| 策略 | 修复前年化 | 最新年化 | 变化 | 最新波动 | 最新 Sharpe | 最新最大回撤 | 锁仓调仓次数 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| IC-weight | 10.31% | 10.19% | -0.13pp | 19.62% | 0.519 | -34.55% | 153 |
-| IC-weight size-neutral | 10.03% | 8.58% | -1.45pp | 19.33% | 0.444 | -33.41% | 153 |
-| Ridge | 21.39% | 21.14% | -0.26pp | 26.67% | 0.793 | -35.37% | 52 |
-| Ridge size-neutral | 12.81% | 11.74% | -1.07pp | 25.77% | 0.456 | -40.86% | 56 |
+在调仓日 `T` 收盘做决策时，只允许使用满足以下条件的训练样本：
 
-执行网格共识别 20,805 条次日停牌/无报价记录和 1,664 条次日跌停不可卖记录。普通 IC-weight 和 Ridge 变化较小，市值中性版本受锁仓影响更明显。
+```text
+t + horizon + 1 <= T
+```
 
-明细结果：
+Optuna 内部训练集和验证集之间额外留出 `horizon` 个交易日 embargo，避免两侧标签区间重叠。
 
-- `output/csi500/daily_alpha/trade_constraint_validation/performance_before_after.csv`
-- `output/csi500/daily_alpha/trade_constraint_validation/constraint_coverage.csv`
-- `CSI500_DAILY_TRADE_CONSTRAINT_FIX_REPORT.md`
+### 交易约束
 
-### 上一轮完整模型比较
+| 场景 | 当前处理 |
+|---|---|
+| 次日涨停 | 不允许买入；主板按约 10%，创业板/科创板按约 20% 阈值识别 |
+| 次日停牌或无报价 | 不允许买入 |
+| 上市不足 120 个有效交易日 | 不允许买入 |
+| 已持仓股票次日跌停 | 无法卖出，强制继续持有并占用组合名额 |
+| 已持仓股票次日停牌 | 无法卖出，强制继续持有并占用组合名额 |
+| 停牌期间估值 | 使用最近可用价格盯市 |
+| 剩余组合名额 | 从当期可买股票中按分数补足 |
 
-以下树模型、RidgeCV 和 Optuna 数字尚未按最新卖出约束完整重跑，仅保留作为上一轮“买入端可交易性过滤”基线，不应与上表混作同一最终口径。
-
-| 策略 | 年化收益 | 年化波动 | Sharpe | 最大回撤 | 胜率 | 调仓期数 | 平均换手 | 超额收益 | IR |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| RidgeCV | 21.30% | 26.70% | 0.798 | -36.48% | 56.7% | 383 | 35.4% | 18.08% | 1.547 |
-| LightGBM | 21.07% | 28.89% | 0.729 | -31.60% | 55.9% | 383 | 59.1% | 18.38% | 1.442 |
-| XGBoost | 19.17% | 28.67% | 0.668 | -38.06% | 55.6% | 383 | 59.1% | 16.48% | 1.290 |
-| CatBoost | 20.78% | 28.87% | 0.720 | -32.95% | 56.4% | 383 | 54.9% | 18.00% | 1.342 |
-| RandomForest | 19.78% | 28.53% | 0.693 | -33.23% | 56.9% | 383 | 53.7% | 17.00% | 1.311 |
-| LightGBM Optuna | 17.96% | 28.08% | 0.640 | -36.25% | 56.4% | 383 | 61.0% | 15.24% | 1.287 |
-| XGBoost Optuna | 20.22% | 28.61% | 0.707 | -34.00% | 55.9% | 383 | 59.2% | 17.53% | 1.434 |
-| CatBoost Optuna | 20.80% | 28.37% | 0.733 | -38.18% | 55.9% | 383 | 54.9% | 18.05% | 1.467 |
-| RandomForest Optuna | 19.29% | 28.38% | 0.680 | -34.07% | 56.7% | 383 | 54.0% | 16.55% | 1.295 |
-
-结果文件：
-
-- `output/csi500/daily_alpha/performance_summary.csv`
-- `output/csi500/daily_alpha/daily_ic_summary.csv`
-- `output/csi500/daily_alpha/cost_sensitivity.csv`
-- `output/csi500/daily_alpha/*_returns.csv`
-- `output/csi500/daily_alpha/*_optuna_params.csv`
-
-大文件 `data/processed/csi500/daily_alpha/daily_alpha_panel.parquet` 未上传到 GitHub，需要本地运行脚本重新生成。
+原始数据会省略大部分停牌日，因此流水线先按全市场交易日历补齐每只股票的执行网格，再判断买入、卖出和持有状态。这样不会再由单股票 `shift()` 直接跨过停牌期。
 
 ---
 
-## 成本敏感性
+## 版本演进
 
-> 下表尚未按最新停牌/跌停卖出约束重跑，是上一轮完整模型的成本敏感性基线。最新四策略的 30 bps 结果以上方主表为准。
+README 只展示当前最终口径。历史数字和修复过程保留在审计报告中，不再混入主结果表。
 
-| 策略 | 30 bps 年化 | 60 bps 年化 | 100 bps 年化 | 结论 |
-|---|---:|---:|---:|---|
-| RidgeCV | 21.30% | 15.00% | 7.09% | 换手低（~35%），100 bps 下仍为正，成本承受力最强 |
-| Ridge | 21.39% | 15.08% | 7.16% | 与 RidgeCV 基本一致，线性模型最稳健 |
-| CatBoost Optuna | 20.80% | 11.21% | -0.42% | 60 bps 大幅缩水，100 bps 基本归零 |
-| XGBoost Optuna | 20.22% | 9.95% | -2.42% | 换手高（~59%），100 bps 转负 |
-| RandomForest Optuna | 19.29% | 9.95% | -1.39% | 100 bps 转负，成本压力明显 |
-| LightGBM Optuna | 17.96% | 7.58% | -4.88% | 换手最高（~61%），对成本最敏感，100 bps 跌至 -4.88% |
-| IC-weight | 10.31% | 4.36% | -3.09% | 成本敏感，作为传统 baseline 更合适 |
+| 阶段 | 修复内容 | 文档 |
+|---|---|---|
+| 第一轮 | 修复训练窗口使用尚不可知未来标签的问题 | [`NO_LEAKAGE_FIX_REPORT.md`](NO_LEAKAGE_FIX_REPORT.md) |
+| 第二轮 | 增加 Optuna embargo、次日涨停/停牌和新股买入过滤 | [`LEAKAGE_REVIEW_AND_TRADEABILITY_FIX.md`](LEAKAGE_REVIEW_AND_TRADEABILITY_FIX.md) |
+| 当前版本 | 按市场日历处理停牌，并增加跌停/停牌无法卖出的锁仓状态 | [`CSI500_DAILY_TRADE_CONSTRAINT_FIX_REPORT.md`](CSI500_DAILY_TRADE_CONSTRAINT_FIX_REPORT.md) |
 
-30 bps 偏乐观，60 bps 更接近中性假设，100 bps 是压力测试。由于 CSI500 中盘股流动性并不总是充裕，不能只看 30 bps 结果。上一轮加入买入端可交易性过滤后，高换手的树模型在 100 bps 下普遍转负；最新卖出约束结果仍需在完整模型重跑后更新该表。
+仓库中旧的树模型、Optuna 和成本敏感性 CSV 仅用于历史复现。由于它们尚未按当前卖出约束完整重跑，不属于本 README 的最终绩效披露。
 
 ---
 
-## 调参设计
+## 重要局限
 
-- 调参方法：Optuna TPE sampler，不使用网格穷举。
-- 验证方式：walk-forward 内部验证，只使用当前调仓日前的历史数据。
-- 验证集：训练窗口最后 63 个交易日。
-- 重调频率：每 25 个调仓期重新调参。
-- 每次 trial 数：12。
-- 训练抽样：树模型默认最多 50,000 行；RandomForest 单独限制为 15,000 行，避免日频滚动训练过慢。
+### 1. 静态股票池
+
+`data/raw/csi500/index_constituents.csv` 是 2026-05-09 的静态名单，不是历史成分股进出记录。当前回测可能：
+
+- 把后来才进入中证 500 的股票放入更早期样本；
+- 漏掉历史上曾经属于中证 500、但当前已被剔除的股票；
+- 高估长期收益和相对基准表现。
+
+### 2. 缺少历史 ST / *ST 状态
+
+本地行情没有 `is_st`、历史证券简称或证券状态字段。当前静态成分股名称中没有 ST 股票，但不能据此推断 2015-2025 年的历史状态。
+
+因此当前版本没有伪造 ST 过滤。要补齐该约束，需要按交易日提供：
+
+```text
+stock_code, date, is_st
+```
+
+### 3. 涨跌停是近似识别
+
+本地没有交易所官方涨停价和跌停价。当前按板块、日期和前收盘价近似判断 10% / 20% 涨跌停，无法覆盖所有特殊证券和价格取整细节。
+
+### 4. 交易成本仍然简化
+
+当前只按换手扣除固定 30 bps，没有单独建模冲击成本、盘口深度、佣金最低收费和卖出印花税变化。
 
 ---
 
 ## 运行方式
 
-需要先准备 CSI500 原始日频行情、行业和基准数据。已有本地数据时，直接运行：
+准备好 CSI500 原始行情和基准数据后运行：
 
 ```powershell
 $env:QT_UNIVERSE = "csi500"
-python csi500_daily_alpha_pipeline.py --horizon 5 --top-n 50 --run-all-ml --run-all-ml-optuna --optuna-trials 12 --optuna-val-days 63 --optuna-retune-every 25 --lgbm-max-train-rows 50000
+$env:QT_FACTOR_SET = "full"
+
+python csi500_daily_alpha_pipeline.py `
+  --horizon 5 `
+  --top-n 50 `
+  --run-all-ml `
+  --run-all-ml-optuna `
+  --optuna-trials 12 `
+  --optuna-val-days 63 `
+  --optuna-retune-every 25 `
+  --lgbm-max-train-rows 50000
 ```
 
-或使用脚本：
+运行最小交易约束测试：
 
 ```powershell
-.\run_csi500_daily_alpha_pipeline.ps1
+python -m unittest testing.test_daily_trade_constraints -v
 ```
 
-输出目录：
+重新生成 README 图表：
 
-```text
-output/csi500/daily_alpha/
+```powershell
+python analysis/plot_csi500_tradeability_readme.py
 ```
 
 ---
 
-## 项目结构
+## 关键文件
 
 ```text
 quant_training/
 |-- csi500_daily_alpha_pipeline.py
-|-- run_csi500_daily_alpha_pipeline.ps1
-|-- config.py
-|-- data/
-|-- factors/
-|-- portfolio/
-|-- ml/
-`-- output/csi500/daily_alpha/
+|-- testing/
+|   `-- test_daily_trade_constraints.py
+|-- analysis/
+|   `-- plot_csi500_tradeability_readme.py
+|-- docs/readme_assets/
+|   |-- csi500_daily_latest_nav.svg
+|   `-- csi500_tradeability_impact.svg
+|-- output/csi500/daily_alpha/
+|   `-- trade_constraint_validation/
+|-- NO_LEAKAGE_FIX_REPORT.md
+|-- LEAKAGE_REVIEW_AND_TRADEABILITY_FIX.md
+`-- CSI500_DAILY_TRADE_CONSTRAINT_FIX_REPORT.md
 ```
+
+关键输出：
+
+- `output/csi500/daily_alpha/trade_constraint_validation/performance_before_after.csv`
+- `output/csi500/daily_alpha/trade_constraint_validation/constraint_coverage.csv`
+- `output/csi500/daily_alpha/trade_constraint_validation/*_returns.csv`
 
 ---
 
-## 主要结论
+## 当前定位
 
-1. 中证 500 日频价量特征中，`AMIHUD_20D` 和 `SIZE` 的 Rank IC 为正，短中期动量、波动率、换手率类因子多为负 IC，说明该样本中更偏向非流动性、小市值、低波低换手和短期反转逻辑。
-2. 修复标签泄露和买入端不可成交问题后，Ridge 从早期泄露口径的 36.47% 回落到 21.39%；进一步加入停牌/跌停卖出约束后为 21.14%，说明普通 Ridge 对新增约束相对稳健。
-3. 市值中性策略更受卖出约束影响：IC-weight size-neutral 从 10.03% 降至 8.58%，Ridge size-neutral 从 12.81% 降至 11.74%，表明其更容易持有停牌或跌停锁仓标的。
-4. 上一轮完整比较中线性模型的 Sharpe 高于树模型与 Optuna 版本，且换手更低；树模型尚需按最新卖出约束完整重跑后再形成最终横向结论。
-5. 上一轮完整模型表中的 IR 仍偏高（如 Ridge 1.55），主要因基准（中证 500，约 2.86%）偏低且股票池为静态名单存在幸存者偏差；衡量真实 alpha 应以等权全样本为基准，详见 `LEAKAGE_REVIEW_AND_TRADEABILITY_FIX.md`。
-6. 历史 ST / *ST 状态仍是明确数据缺口。对外展示时必须同时说明静态成分股幸存者偏差、ST 过滤缺失和官方涨跌停价缺失，避免把当前结果描述为生产级无偏回测。
+这个分支展示的是一套逐步收紧交易假设后的 CSI500 日频研究框架：
+
+- 收益不再建立在近端标签泄漏上；
+- 买入端不再假设涨停或停牌股票可以买到；
+- 卖出端不再假设跌停或停牌股票可以立即卖出；
+- 对仍缺失的历史成分股和 ST 数据明确披露，而不是用不可靠代理掩盖。
+
+当前最可信的结论不是“某个模型能稳定获得 20% 以上收益”，而是：在这份带有静态股票池偏差的数据上，普通 Ridge 对逐步收紧的交易约束相对稳健，但结果仍需在历史动态成分股和 ST 状态补齐后重新验证。
