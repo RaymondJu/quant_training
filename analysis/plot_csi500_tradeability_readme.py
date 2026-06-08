@@ -40,17 +40,32 @@ COLORS = {
     "neutral": {"base": "#C5CAD3", "mid": "#7A828F", "dark": "#464C55"},
 }
 
-FONT_FAMILY = ["Aptos", "Inter", "Segoe UI", "DejaVu Sans", "Arial", "sans-serif"]
-MONO_FONT_FAMILY = ["Consolas", "DejaVu Sans Mono", "monospace"]
+FONT_FAMILY = [
+    "Microsoft YaHei",
+    "Microsoft JhengHei",
+    "Noto Sans CJK SC",
+    "SimHei",
+    "Segoe UI",
+    "DejaVu Sans",
+    "sans-serif",
+]
+MONO_FONT_FAMILY = ["Microsoft YaHei", "Consolas", "DejaVu Sans Mono", "monospace"]
 
 VALIDATION_DIR = ROOT / "output" / "csi500" / "daily_alpha" / "trade_constraint_validation"
 OUTPUT_DIR = ROOT / "docs" / "readme_assets"
 
 RETURN_FILES = {
-    "IC-weight": "ic_weight_returns.csv",
-    "IC-weight size-neutral": "ic_weight_size_neutral_returns.csv",
+    "IC 加权": "ic_weight_returns.csv",
+    "IC 加权（市值中性）": "ic_weight_size_neutral_returns.csv",
     "Ridge": "ridge_returns.csv",
-    "Ridge size-neutral": "ridge_size_neutral_returns.csv",
+    "Ridge（市值中性）": "ridge_size_neutral_returns.csv",
+}
+
+STRATEGY_LABELS = {
+    "IC-weight": "IC 加权",
+    "IC-weight size-neutral": "IC 加权（市值中性）",
+    "Ridge": "Ridge",
+    "Ridge size-neutral": "Ridge（市值中性）",
 }
 
 
@@ -69,6 +84,10 @@ def use_chart_theme() -> None:
             "font.family": "sans-serif",
             "font.sans-serif": FONT_FAMILY,
             "font.monospace": MONO_FONT_FAMILY,
+            "font.size": 12,
+            "axes.labelsize": 13,
+            "xtick.labelsize": 12,
+            "ytick.labelsize": 12,
         },
     )
 
@@ -85,7 +104,7 @@ def add_chart_header(fig, ax, title: str, subtitle: str) -> None:
         title,
         ha="left",
         va="top",
-        fontsize=15,
+        fontsize=19,
         fontweight="semibold",
         color=TOKENS["ink"],
     )
@@ -95,7 +114,7 @@ def add_chart_header(fig, ax, title: str, subtitle: str) -> None:
         subtitle,
         ha="left",
         va="top",
-        fontsize=9,
+        fontsize=11.5,
         color=TOKENS["muted"],
     )
 
@@ -141,25 +160,23 @@ def plot_latest_nav(frames: dict[str, pd.DataFrame]) -> None:
 
     benchmark = load_benchmark_daily_returns().copy()
     benchmark["benchmark_fwd_5d"] = _forward_compound_return(benchmark["index_ret"], 5)
-    ridge_dates = frames["Ridge"].loc[
-        frames["Ridge"]["date"].between(common_start, common_end), "date"
-    ]
+    ridge_dates = frames["Ridge"].loc[frames["Ridge"]["date"].between(common_start, common_end), "date"]
     benchmark = benchmark.set_index("date").reindex(ridge_dates).dropna(subset=["benchmark_fwd_5d"])
     benchmark_nav = pd.DataFrame(
         {
             "date": benchmark.index,
             "nav": (1.0 + benchmark["benchmark_fwd_5d"]).cumprod().values,
-            "series": "CSI500 benchmark",
+            "series": "中证 500 基准",
         }
     )
     plot_df = pd.concat([*nav_rows, benchmark_nav], ignore_index=True)
 
     styles = {
         "Ridge": (COLORS["blue"]["mid"], "-", 2.0),
-        "Ridge size-neutral": (COLORS["blue"]["base"], "--", 1.4),
-        "IC-weight": (COLORS["gold"]["mid"], "-", 1.4),
-        "IC-weight size-neutral": (COLORS["gold"]["base"], "--", 1.4),
-        "CSI500 benchmark": (COLORS["neutral"]["dark"], ":", 1.5),
+        "Ridge（市值中性）": (COLORS["blue"]["base"], "--", 1.4),
+        "IC 加权": (COLORS["gold"]["mid"], "-", 1.4),
+        "IC 加权（市值中性）": (COLORS["gold"]["base"], "--", 1.4),
+        "中证 500 基准": (COLORS["neutral"]["dark"], ":", 1.5),
     }
 
     fig, ax = plt.subplots(figsize=(11, 6.2))
@@ -175,7 +192,7 @@ def plot_latest_nav(frames: dict[str, pd.DataFrame]) -> None:
             linewidth=linewidth,
         )
 
-    ax.set_ylabel("Cumulative NAV")
+    ax.set_ylabel("累计净值")
     ax.set_xlabel("")
     ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.1fx"))
     locator = mdates.AutoDateLocator(minticks=5, maxticks=8)
@@ -187,35 +204,31 @@ def plot_latest_nav(frames: dict[str, pd.DataFrame]) -> None:
         frameon=False,
         ncol=3,
         borderaxespad=0,
-        fontsize=8.5,
+        fontsize=10.5,
     )
     sns.despine(ax=ax)
     add_chart_header(
         fig,
         ax,
-        "Latest tradeability-constrained strategy NAV",
-        f"Common comparison window {common_start:%Y-%m-%d} to {common_end:%Y-%m-%d}; "
-        "5-trading-day rebalance, Top 50, net of 30 bps turnover cost.",
+        "最新可交易约束下的策略净值",
+        f"共同对比区间：{common_start:%Y-%m-%d} 至 {common_end:%Y-%m-%d}；"
+        "每 5 个交易日调仓，等权持有前 50 名，已扣除 30 个基点换手成本。",
     )
     save_figure(fig, "csi500_daily_latest_nav")
 
 
 def plot_constraint_impact() -> None:
     df = pd.read_csv(VALIDATION_DIR / "performance_before_after.csv")
-    order = [
-        "IC-weight",
-        "IC-weight size-neutral",
-        "Ridge",
-        "Ridge size-neutral",
-    ]
+    order = ["IC-weight", "IC-weight size-neutral", "Ridge", "Ridge size-neutral"]
     df = df.set_index("Label").loc[order].reset_index()
+    df["策略"] = df["Label"].map(STRATEGY_LABELS)
     y = np.arange(len(df))
 
     fig, (ax1, ax2) = plt.subplots(
         1,
         2,
-        figsize=(12, 5.8),
-        gridspec_kw={"width_ratios": [1.15, 1]},
+        figsize=(14, 6.6),
+        gridspec_kw={"width_ratios": [1.12, 1.18]},
     )
 
     before = df["Ann_Return_Before"] * 100
@@ -228,7 +241,7 @@ def plot_constraint_impact() -> None:
         facecolors=TOKENS["panel"],
         edgecolors=COLORS["neutral"]["dark"],
         linewidths=1.2,
-        label="Before exit constraints",
+        label="加入卖出约束前",
         zorder=3,
     )
     ax1.scatter(
@@ -238,23 +251,23 @@ def plot_constraint_impact() -> None:
         facecolors=COLORS["orange"]["base"],
         edgecolors=COLORS["orange"]["dark"],
         linewidths=1.0,
-        label="Latest",
+        label="当前版本",
         zorder=4,
     )
     for i, row in df.iterrows():
         ax1.text(
             (before.iloc[i] + after.iloc[i]) / 2,
             i - 0.14,
-            f"{row['Ann_Return_Change_pp']:+.2f}pp",
+            f"{row['Ann_Return_Change_pp']:+.2f} 个百分点",
             ha="center",
             va="center",
-            fontsize=8,
+            fontsize=10,
             color=COLORS["orange"]["dark"],
             family=MONO_FONT_FAMILY[0],
         )
-    ax1.set_yticks(y, df["Label"])
+    ax1.set_yticks(y, df["策略"])
     ax1.invert_yaxis()
-    ax1.set_xlabel("Annualized return")
+    ax1.set_xlabel("年化收益率")
     ax1.xaxis.set_major_formatter(mticker.PercentFormatter(xmax=100, decimals=0))
     ax1.legend(
         loc="lower left",
@@ -262,7 +275,7 @@ def plot_constraint_impact() -> None:
         frameon=False,
         ncol=2,
         borderaxespad=0,
-        fontsize=8.5,
+        fontsize=10.5,
     )
     ax1.grid(axis="y", visible=False)
 
@@ -274,7 +287,7 @@ def plot_constraint_impact() -> None:
         color=COLORS["blue"]["base"],
         edgecolor=COLORS["blue"]["dark"],
         linewidth=1.0,
-        label="Suspension locks",
+        label="停牌锁仓",
     )
     ax2.barh(
         y,
@@ -283,29 +296,29 @@ def plot_constraint_impact() -> None:
         color=COLORS["orange"]["base"],
         edgecolor=COLORS["orange"]["dark"],
         linewidth=1.0,
-        label="Limit-down locks",
+        label="跌停锁仓",
     )
     for i, row in df.iterrows():
         total = row["Suspension_Locks"] + row["Limit_Down_Locks"]
         ax2.text(
             total + 5,
             i,
-            f"{int(total)} events / {int(row['Locked_Rebalances'])} rebalances",
+            f"{int(total)} 次锁仓 / {int(row['Locked_Rebalances'])} 次调仓受影响",
             ha="left",
             va="center",
-            fontsize=8,
+            fontsize=10,
             color=TOKENS["muted"],
         )
     ax2.set_yticks(y, [])
     ax2.invert_yaxis()
-    ax2.set_xlabel("Locked holding events")
+    ax2.set_xlabel("持仓锁定事件数")
     ax2.legend(
         loc="lower left",
         bbox_to_anchor=(0, 1.02),
         frameon=False,
         ncol=2,
         borderaxespad=0,
-        fontsize=8.5,
+        fontsize=10.5,
     )
     ax2.grid(axis="y", visible=False)
     sns.despine(ax=ax1)
@@ -313,9 +326,9 @@ def plot_constraint_impact() -> None:
     add_chart_header(
         fig,
         ax1,
-        "Exit constraints mainly reduce the size-neutral variants",
-        "Annualized return before vs. after suspension and limit-down exit constraints; "
-        "lock counts are holding-level events and can exceed the number of affected rebalances.",
+        "卖出约束对市值中性策略影响更明显",
+        "对比加入停牌与跌停卖出约束前后的年化收益；锁仓按持仓逐只计数，"
+        "因此锁仓次数可能高于受影响的调仓次数。",
     )
     fig.subplots_adjust(wspace=0.22)
     save_figure(fig, "csi500_tradeability_impact")
