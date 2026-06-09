@@ -6,8 +6,10 @@
 
 ## 核心结论
 
-- 当前四个已按最新交易约束重跑的策略中，`Ridge` 表现最稳健：年化收益 **21.14%**、Sharpe **0.793**。
-- 加入停牌和跌停卖出约束后，普通 `Ridge` 年化只下降 **0.26 个百分点**；市值中性版本受影响更明显。
+- 当前 13 条策略均已按最新交易约束重跑。30 bps 成本下，`CatBoost` 表现最好：年化收益 **25.45%**、Sharpe **0.912**。
+- `XGBoost` 最大回撤最低，为 **-27.90%**；`Ridge` 的收益略低，但平均换手只有 **35.45%**，明显低于树模型的 53%-61%。
+- 四组 Optuna 模型都没有超过对应默认参数，说明验证期 Rank IC 最优不等于最终 Top 50 组合收益最优。
+- 成本升至 60 bps 后，CatBoost 年化降至 **15.63%**，与 Ridge 的 **14.83%** 已较接近；树模型优势对交易成本较敏感。
 - 执行网格识别出 **20,805** 条次日停牌/无报价记录和 **1,664** 条次日跌停不可卖记录。
 - 结果仍受到静态成分股幸存者偏差影响；本地也缺少历史 ST / *ST 状态，因此这仍是研究型回测，不是生产级无偏结果。
 
@@ -26,38 +28,71 @@
 | 调仓规则 | 每 5 个市场交易日调仓，Top 50 等权 |
 | 交易成本 | 按组合换手扣除 30 bps |
 | 模型训练 | Walk-forward，只使用调仓时点已经完整实现的历史标签 |
-| 当前主结果 | IC-weight、IC-weight size-neutral、Ridge、Ridge size-neutral |
+| 当前主结果 | IC 组合、Ridge/RidgeCV、四类默认树模型及四类 Optuna 模型 |
 
-绩效表使用各策略自身的有效 walk-forward 区间：IC 组合 472 个调仓期，Ridge 组合 383 个调仓期。顶部净值图为了横向可比，统一使用 2018-02-05 至 2025-12-22 的共同区间。
+绩效表使用各策略自身的有效 walk-forward 区间：IC 组合 472 个调仓期，其余机器学习模型 383 个调仓期。顶部净值图为了横向可比，统一使用 2018-02-05 至 2025-12-22 的共同区间。
 
 ---
 
 ## 最新结果
 
-以下是当前版本唯一的主结果表。所有数字均已包含：
+以下两张表共同构成当前版本的主结果。所有数字均已包含：
 
 - 标签可得性修复；
 - 次日涨停、停牌和新股买入过滤；
 - 次日跌停或停牌时无法卖出的锁仓约束；
 - 30 bps 换手成本。
 
+### 线性与 IC 基线
+
 | 策略 | 年化收益 | 年化波动 | Sharpe | 最大回撤 | 平均换手 | 锁仓调仓次数 |
 |---|---:|---:|---:|---:|---:|---:|
 | IC-weight | 10.19% | 19.62% | 0.519 | -34.55% | 36.32% | 153 |
 | IC-weight size-neutral | 8.58% | 19.33% | 0.444 | -33.41% | 37.38% | 153 |
-| **Ridge** | **21.14%** | 26.67% | **0.793** | **-35.37%** | **35.45%** | 52 |
+| Ridge | 21.14% | 26.67% | 0.793 | -35.37% | 35.45% | 52 |
 | Ridge size-neutral | 11.74% | 25.77% | 0.456 | -40.86% | 43.71% | 56 |
+| RidgeCV | 20.96% | 26.65% | 0.786 | -35.25% | 35.44% | 52 |
+
+### 树模型与 Optuna
+
+| 策略 | 年化收益 | 年化波动 | Sharpe | 最大回撤 | 平均换手 | 锁仓调仓次数 |
+|---|---:|---:|---:|---:|---:|---:|
+| LightGBM | 23.80% | 27.99% | 0.850 | -32.85% | 58.72% | 63 |
+| XGBoost | 22.86% | 28.48% | 0.803 | **-27.90%** | 58.10% | 64 |
+| **CatBoost** | **25.45%** | 27.90% | **0.912** | -29.33% | 54.02% | 56 |
+| RandomForest | 24.37% | 30.08% | 0.810 | -29.37% | 53.52% | 54 |
+| LightGBM Optuna | 21.13% | 28.19% | 0.750 | -29.36% | 60.81% | 62 |
+| XGBoost Optuna | 18.18% | 27.83% | 0.653 | -38.99% | 60.51% | 64 |
+| CatBoost Optuna | 21.24% | 28.21% | 0.753 | -33.23% | 55.51% | 47 |
+| RandomForest Optuna | 19.32% | 28.43% | 0.680 | -30.37% | 55.27% | 58 |
+
+![默认参数与 Optuna 净值对比](docs/readme_assets/csi500_ml_default_vs_optuna.svg)
+
+### 成本敏感性
+
+下表只比较五条代表性默认参数模型的年化收益。树模型换手更高，因此成本上升时衰减更快。
+
+| 策略 | 30 bps | 60 bps | 100 bps |
+|---|---:|---:|---:|
+| Ridge | 21.14% | 14.83% | **6.91%** |
+| LightGBM | 23.80% | 13.31% | 0.67% |
+| XGBoost | 22.86% | 12.55% | 0.12% |
+| CatBoost | **25.45%** | **15.63%** | 3.71% |
+| RandomForest | 24.37% | 14.73% | 3.01% |
+
+### 交易约束版本影响
 
 ![卖出约束影响](docs/readme_assets/csi500_tradeability_impact.svg)
 
-图中锁仓事件按持仓计数，同一次调仓可能有多只股票被锁，因此事件数可以大于受影响的调仓次数。
+该图保留 2026-06-07 首轮验证的四条代表路径，用于说明市值中性版本对锁仓更敏感。图中锁仓事件按持仓计数，同一次调仓可能有多只股票被锁，因此事件数可以大于受影响的调仓次数。
 
 ### 如何理解结果
 
-1. 普通 Ridge 从 21.39% 降至 21.14%，说明它对新增卖出约束相对稳健。
-2. 市值中性策略下降更多，说明它们更容易持有停牌或跌停锁仓标的。
-3. 锁仓事件以停牌为主，跌停事件数量较少，但跌停约束在 Ridge 持仓中占比更高。
-4. 不再把尚未按最新卖出约束重跑的树模型结果放入主表，避免混用不同版本口径。
+1. 30 bps 假设下，CatBoost 是当前收益和 Sharpe 最好的模型；XGBoost 的最大回撤最低。
+2. Ridge 与 RidgeCV 几乎一致，说明交叉验证选择正则强度没有带来明显组合收益改善。
+3. 四组 Optuna 版本全部落后于默认参数，当前调参目标需要进一步改成更贴近组合收益、换手和回撤的联合目标。
+4. 树模型的平均换手约为 Ridge 的 1.5-1.7 倍，因此更依赖低交易成本假设。
+5. 相对 2026-05-27 版本的变化同时包含全市场日历执行收益修复和卖出锁仓约束，不能把版本前后的收益差全部归因于某一项约束。
 
 ---
 
@@ -68,7 +103,7 @@ flowchart LR
     A["日频 OHLCV"] --> B["价量特征"]
     B --> C["横截面缩尾与标准化"]
     C --> D["Point-in-time 标签与训练窗口"]
-    D --> E["IC / Ridge 打分"]
+    D --> E["IC / 线性模型 / 树模型打分"]
     E --> F["次日买入过滤"]
     F --> G["停牌或跌停持仓锁定"]
     G --> H["剩余名额选 Top 50"]
@@ -130,8 +165,9 @@ README 只展示当前最终口径。历史数字和修复过程保留在审计�
 | 第一轮 | 修复训练窗口使用尚不可知未来标签的问题 | [`NO_LEAKAGE_FIX_REPORT.md`](NO_LEAKAGE_FIX_REPORT.md) |
 | 第二轮 | 增加 Optuna embargo、次日涨停/停牌和新股买入过滤 | [`LEAKAGE_REVIEW_AND_TRADEABILITY_FIX.md`](LEAKAGE_REVIEW_AND_TRADEABILITY_FIX.md) |
 | 当前版本 | 按市场日历处理停牌，并增加跌停/停牌无法卖出的锁仓状态 | [`CSI500_DAILY_TRADE_CONSTRAINT_FIX_REPORT.md`](CSI500_DAILY_TRADE_CONSTRAINT_FIX_REPORT.md) |
+| 全模型补跑 | 在当前交易约束面板上重跑 RidgeCV、四类树模型和四类 Optuna 模型 | [`CSI500_DAILY_ML_TRADE_CONSTRAINT_RERUN.md`](CSI500_DAILY_ML_TRADE_CONSTRAINT_RERUN.md) |
 
-仓库中旧的树模型、Optuna 和成本敏感性 CSV 仅用于历史复现。由于它们尚未按当前卖出约束完整重跑，不属于本 README 的最终绩效披露。
+`output/csi500/daily_alpha/` 根目录下的 2026-05-27 CSV 保留用于历史复现；当前最终结果统一位于 `trade_constraint_validation/`，README 不再混用两个版本。
 
 ---
 
@@ -196,6 +232,18 @@ python -m unittest testing.test_daily_trade_constraints -v
 python analysis/plot_csi500_tradeability_readme.py
 ```
 
+如果最新交易约束面板已经存在，只续跑机器学习模型和汇总表：
+
+```powershell
+python analysis/run_csi500_trade_constraint_ml.py `
+  --models all `
+  --max-train-rows 50000 `
+  --optuna-trials 12 `
+  --optuna-val-days 63 `
+  --optuna-retune-every 25 `
+  --cost-scenarios-bps 30,60,100
+```
+
 ---
 
 ## 关键文件
@@ -206,20 +254,25 @@ quant_training/
 |-- testing/
 |   `-- test_daily_trade_constraints.py
 |-- analysis/
-|   `-- plot_csi500_tradeability_readme.py
+|   |-- plot_csi500_tradeability_readme.py
+|   `-- run_csi500_trade_constraint_ml.py
 |-- docs/readme_assets/
 |   |-- csi500_daily_latest_nav.svg
+|   |-- csi500_ml_default_vs_optuna.svg
 |   `-- csi500_tradeability_impact.svg
 |-- output/csi500/daily_alpha/
 |   `-- trade_constraint_validation/
 |-- NO_LEAKAGE_FIX_REPORT.md
 |-- LEAKAGE_REVIEW_AND_TRADEABILITY_FIX.md
-`-- CSI500_DAILY_TRADE_CONSTRAINT_FIX_REPORT.md
+|-- CSI500_DAILY_TRADE_CONSTRAINT_FIX_REPORT.md
+`-- CSI500_DAILY_ML_TRADE_CONSTRAINT_RERUN.md
 ```
 
 关键输出：
 
-- `output/csi500/daily_alpha/trade_constraint_validation/performance_before_after.csv`
+- `output/csi500/daily_alpha/trade_constraint_validation/performance_all_models.csv`
+- `output/csi500/daily_alpha/trade_constraint_validation/performance_before_after_all_models.csv`
+- `output/csi500/daily_alpha/trade_constraint_validation/cost_sensitivity_all_models.csv`
 - `output/csi500/daily_alpha/trade_constraint_validation/constraint_coverage.csv`
 - `output/csi500/daily_alpha/trade_constraint_validation/*_returns.csv`
 
@@ -232,6 +285,7 @@ quant_training/
 - 收益不再建立在近端标签泄漏上；
 - 买入端不再假设涨停或停牌股票可以买到；
 - 卖出端不再假设跌停或停牌股票可以立即卖出；
+- 所有线性模型、树模型和 Optuna 版本使用同一套执行约束；
 - 对仍缺失的历史成分股和 ST 数据明确披露，而不是用不可靠代理掩盖。
 
-当前最可信的结论不是“某个模型能稳定获得 20% 以上收益”，而是：在这份带有静态股票池偏差的数据上，普通 Ridge 对逐步收紧的交易约束相对稳健，但结果仍需在历史动态成分股和 ST 状态补齐后重新验证。
+当前最可信的结论不是“CatBoost 能稳定获得 25% 收益”，而是：在这份带有静态股票池偏差的数据上，默认 CatBoost 在 30 bps 成本假设下领先，Ridge 对成本上升更稳健，而现有 Optuna 目标没有转化成更好的组合表现。所有结论仍需在历史动态成分股、ST 状态和更真实冲击成本补齐后重新验证。

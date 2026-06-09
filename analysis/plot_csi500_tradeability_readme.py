@@ -55,10 +55,19 @@ VALIDATION_DIR = ROOT / "output" / "csi500" / "daily_alpha" / "trade_constraint_
 OUTPUT_DIR = ROOT / "docs" / "readme_assets"
 
 RETURN_FILES = {
-    "IC 加权": "ic_weight_returns.csv",
-    "IC 加权（市值中性）": "ic_weight_size_neutral_returns.csv",
+    "IC-weight": "ic_weight_returns.csv",
+    "IC-weight size-neutral": "ic_weight_size_neutral_returns.csv",
     "Ridge": "ridge_returns.csv",
-    "Ridge（市值中性）": "ridge_size_neutral_returns.csv",
+    "Ridge size-neutral": "ridge_size_neutral_returns.csv",
+    "RidgeCV": "ridge_cv_returns.csv",
+    "LightGBM": "lightgbm_returns.csv",
+    "XGBoost": "xgboost_returns.csv",
+    "CatBoost": "catboost_returns.csv",
+    "RandomForest": "random_forest_returns.csv",
+    "LightGBM Optuna": "lightgbm_optuna_returns.csv",
+    "XGBoost Optuna": "xgboost_optuna_returns.csv",
+    "CatBoost Optuna": "catboost_optuna_returns.csv",
+    "RandomForest Optuna": "random_forest_optuna_returns.csv",
 }
 
 STRATEGY_LABELS = {
@@ -66,6 +75,15 @@ STRATEGY_LABELS = {
     "IC-weight size-neutral": "IC 加权（市值中性）",
     "Ridge": "Ridge",
     "Ridge size-neutral": "Ridge（市值中性）",
+    "RidgeCV": "RidgeCV",
+    "LightGBM": "LightGBM",
+    "XGBoost": "XGBoost",
+    "CatBoost": "CatBoost",
+    "RandomForest": "随机森林",
+    "LightGBM Optuna": "LightGBM Optuna",
+    "XGBoost Optuna": "XGBoost Optuna",
+    "CatBoost Optuna": "CatBoost Optuna",
+    "RandomForest Optuna": "随机森林 Optuna",
 }
 
 
@@ -142,20 +160,31 @@ def save_figure(fig, stem: str) -> None:
 def load_returns() -> dict[str, pd.DataFrame]:
     frames = {}
     for label, filename in RETURN_FILES.items():
-        frame = pd.read_csv(VALIDATION_DIR / filename, parse_dates=["date"])
+        path = VALIDATION_DIR / filename
+        if not path.exists():
+            continue
+        frame = pd.read_csv(path, parse_dates=["date"])
         frames[label] = frame.sort_values("date")
     return frames
 
 
 def plot_latest_nav(frames: dict[str, pd.DataFrame]) -> None:
-    common_start = max(frame["date"].min() for frame in frames.values())
-    common_end = min(frame["date"].max() for frame in frames.values())
+    selected_labels = [
+        "Ridge",
+        "LightGBM",
+        "XGBoost",
+        "CatBoost",
+        "RandomForest",
+    ]
+    selected = {label: frames[label] for label in selected_labels}
+    common_start = max(frame["date"].min() for frame in selected.values())
+    common_end = min(frame["date"].max() for frame in selected.values())
 
     nav_rows = []
-    for label, frame in frames.items():
+    for label, frame in selected.items():
         part = frame.loc[frame["date"].between(common_start, common_end), ["date", "strategy_ret"]].copy()
         part["nav"] = (1.0 + part["strategy_ret"]).cumprod()
-        part["series"] = label
+        part["series"] = STRATEGY_LABELS[label]
         nav_rows.append(part[["date", "nav", "series"]])
 
     benchmark = load_benchmark_daily_returns().copy()
@@ -172,10 +201,11 @@ def plot_latest_nav(frames: dict[str, pd.DataFrame]) -> None:
     plot_df = pd.concat([*nav_rows, benchmark_nav], ignore_index=True)
 
     styles = {
-        "Ridge": (COLORS["blue"]["mid"], "-", 2.0),
-        "Ridge（市值中性）": (COLORS["blue"]["base"], "--", 1.4),
-        "IC 加权": (COLORS["gold"]["mid"], "-", 1.4),
-        "IC 加权（市值中性）": (COLORS["gold"]["base"], "--", 1.4),
+        "CatBoost": (COLORS["blue"]["mid"], "-", 2.2),
+        "LightGBM": (COLORS["olive"]["mid"], "-", 1.6),
+        "XGBoost": (COLORS["orange"]["mid"], "-", 1.6),
+        "随机森林": (COLORS["pink"]["mid"], "-", 1.6),
+        "Ridge": (COLORS["gold"]["mid"], "--", 1.8),
         "中证 500 基准": (COLORS["neutral"]["dark"], ":", 1.5),
     }
 
@@ -210,11 +240,75 @@ def plot_latest_nav(frames: dict[str, pd.DataFrame]) -> None:
     add_chart_header(
         fig,
         ax,
-        "最新可交易约束下的策略净值",
+        "最新交易约束下的默认机器学习策略净值",
         f"共同对比区间：{common_start:%Y-%m-%d} 至 {common_end:%Y-%m-%d}；"
         "每 5 个交易日调仓，等权持有前 50 名，已扣除 30 个基点换手成本。",
     )
     save_figure(fig, "csi500_daily_latest_nav")
+
+
+def plot_optuna_comparison(frames: dict[str, pd.DataFrame]) -> None:
+    pairs = [
+        ("LightGBM", "LightGBM Optuna"),
+        ("XGBoost", "XGBoost Optuna"),
+        ("CatBoost", "CatBoost Optuna"),
+        ("RandomForest", "RandomForest Optuna"),
+    ]
+    common_start = max(frames[label]["date"].min() for pair in pairs for label in pair)
+    common_end = min(frames[label]["date"].max() for pair in pairs for label in pair)
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8.5), sharex=True)
+    for ax, (base_label, tuned_label) in zip(axes.flat, pairs):
+        for label, color, linestyle, linewidth in [
+            (base_label, COLORS["blue"]["mid"], "-", 2.0),
+            (tuned_label, COLORS["orange"]["mid"], "--", 1.8),
+        ]:
+            part = frames[label].loc[
+                frames[label]["date"].between(common_start, common_end),
+                ["date", "strategy_ret"],
+            ].copy()
+            part["nav"] = (1.0 + part["strategy_ret"]).cumprod()
+            legend_label = "默认参数" if label == base_label else "Optuna"
+            ax.plot(
+                part["date"],
+                part["nav"],
+                label=legend_label,
+                color=color,
+                linestyle=linestyle,
+                linewidth=linewidth,
+            )
+        ax.set_title(STRATEGY_LABELS[base_label], fontsize=14, fontweight="semibold", loc="left")
+        ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.1fx"))
+        ax.legend(frameon=False, fontsize=10.5, loc="upper left")
+        locator = mdates.AutoDateLocator(minticks=4, maxticks=6)
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+        sns.despine(ax=ax)
+
+    axes[0, 0].set_ylabel("累计净值")
+    axes[1, 0].set_ylabel("累计净值")
+    fig.subplots_adjust(top=0.79, hspace=0.28, wspace=0.16)
+    left = axes[0, 0].get_position().x0
+    fig.text(
+        left,
+        0.975,
+        "默认参数与 Optuna 调参后的净值对比",
+        ha="left",
+        va="top",
+        fontsize=19,
+        fontweight="semibold",
+        color=TOKENS["ink"],
+    )
+    fig.text(
+        left,
+        0.925,
+        "四组 Optuna 模型均未超过对应默认参数；验证期 Rank IC 最优不等于组合收益最优。",
+        ha="left",
+        va="top",
+        fontsize=11.5,
+        color=TOKENS["muted"],
+    )
+    save_figure(fig, "csi500_ml_default_vs_optuna")
 
 
 def plot_constraint_impact() -> None:
@@ -338,6 +432,7 @@ def main() -> None:
     use_chart_theme()
     frames = load_returns()
     plot_latest_nav(frames)
+    plot_optuna_comparison(frames)
     plot_constraint_impact()
     print(f"Saved README charts to {OUTPUT_DIR}")
 
